@@ -1,0 +1,32 @@
+name: Test
+on:
+  push:
+    branches: [main]
+  pull_request:
+permissions:
+  contents: read
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: false
+      - name: Backend tests and race detector
+        run: go test -race ./cmd/drive && go vet ./cmd/drive
+      - name: Browser protocol and archive tests
+        run: node --test web/*.test.mjs
+      - name: Validate production proxy
+        run: docker run --rm -e DOMAIN=drive.miszori.dev -e ACME_EMAIL=test@example.com -v "$PWD/Caddyfile:/etc/caddy/Caddyfile:ro" caddy:2.11-alpine caddy validate --config /etc/caddy/Caddyfile --adapter caddyfile
+      - name: Start integration stack
+        run: docker compose -p drive-test -f tests/compose.yaml up --build -d --wait
+      - name: Exercise Caddy and API
+        run: node --test tests/integration.test.mjs
+      - name: Cleanup test stack
+        if: always()
+        run: docker compose -p drive-test -f tests/compose.yaml down -v

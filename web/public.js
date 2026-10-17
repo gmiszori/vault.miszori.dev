@@ -1,0 +1,248 @@
+import { CHUNK_SIZE, MEMORY_LIMIT, decodeKey, importKey, decryptChunk, parseManifest, FramedReader, formatBytes } from './crypto.js';
+import { TarWriter, archiveSize } from './tar.js';
+
+let fragment = location.hash.slice(1);
+if (location.hash) history.replaceState(null, '', location.pathname + location.search);
+const $ = id => document.getElementById(id);
+const route = /^\/package\/([A-Za-z0-9_-]{1,128})\/?$/.exec(location.pathname);
+const supportsStreaming = typeof window.showSaveFilePicker === 'function' && window.isSecureContext;
+let keyBytes;
+let available = false;
+let busy = false;
+let expiresAt = 0;
+let controller;
+let blobURL;
+let initialization = 0;
+
+function status(message, error = false) {
+  $('download-status').textContent = message;
+  $('download-status').classList.toggle('error', error);
+}
+
+function updateButton() {
+  $('download-button').disabled = !available || busy || !$('download-consent').checked;
+}
+
+function progress(bytes, total) {
+  const percent = total ? Math.floor(bytes / total * 100) : 100;
+  $('download-meter').value = percent;
+  $('download-percent').textContent = `${percent}%`;
+  $('download-stage').textContent = `Decrypting ${formatBytes(bytes)} of ${formatBytes(total)}`;
+}
+
+function memorySink(filename) {
+  let parts = [];
+  let bytes = 0;
+  return {
+    async write(part) {
+      if (bytes + part.byteLength > MEMORY_LIMIT) throw new Error('The archive exceeds this browser’s strict 128 MiB memory limit.');
+      parts.push(part);
+      bytes += part.byteLength;
+    },
+    async close() {
+      const blob = new Blob(parts, { type: 'application/x-tar' });
+      parts = [];
+      blobURL = URL.createObjectURL(blob);
+      const link = $('save-archive');
+      link.href = blobURL;
+      link.download = filename;
+      link.hidden = false;
+      link.click();
+    },
+    async abort() { parts = []; }
+  };
+}
+
+async function download() {
+  if (!available || busy || !$('download-consent').checked) return;
+  if (Date.now() >= expiresAt) {
+    available = false;
+    updateButton();
+    status('This package has expired. Ask the sender for a new link.', true);
+    return;
+  }
+  busy = true;
+  updateButton();
+  status('Choose a destination. The transfer has not started yet.');
+  const id = route[1];
+  const filename = `drive-${id.slice(0, 12)}.tar`;
+  let consumed = false;
+  let sink;
+  let frames;
+  try {
+    // Invoke the picker during the click gesture, before any asynchronous work.
+    const destination = supportsStreaming ? await window.showSaveFilePicker({
+      suggestedName: filename,
+      types: [{ description: 'TAR archive (all package files)', accept: { 'application/x-tar': ['.tar'] } }]
+    }) : null;
+    if (destination) sink = await destination.createWritable();
+    else sink = memorySink(filename);
+    const key = await importKey(keyBytes);
+    controller = new AbortController();
+    $('download-progress').hidden = false;
+    $('cancel-download').hidden = false;
+    $('download-stage').textContent = 'Claiming encrypted package…';
+    status('Keep this tab open. Starting this transfer cannot be undone.');
+    consumed = true;
+    available = false;
+    const response = await fetch(`/api/packages/${encodeURIComponent(id)}/consume`, {
+      method: 'POST', signal: controller.signal, credentials: 'omit', cache: 'no-store', referrerPolicy: 'no-referrer'
+    });
+    if (!response.ok) {
+      await response.body?.cancel();
+      throw new Error(response.status === 404 || response.status === 409 || response.status === 410
+        ? 'This package does not exist, or it has already been claimed, deleted, or expired.'
+        : 'The server could not start the transfer. Ask the sender to check its status.');
+    }
+    frames = new FramedReader(response.body);
+    const { manifest, bytes, chunks } = parseManifest(await decryptChunk(key, id, 0, await frames.record()));
+    if (!supportsStreaming && archiveSize(manifest.files) > MEMORY_LIMIT) {
+      throw new Error('This archive is larger than the 128 MiB browser limit. No file data was saved. The one-time transfer has already been claimed; ask the sender for a new link and use desktop Chrome or Edge.');
+    }
+    const tar = new TarWriter(sink);
+    let index = 1;
+    let received = 0;
+    for (const file of manifest.files) {
+      await tar.startFile(file);
+      for (let offset = 0; offset < file.size; offset += CHUNK_SIZE) {
+        controller.signal.throwIfAborted();
+        const plaintext = await decryptChunk(key, id, index++, await frames.record());
+        if (plaintext.length !== Math.min(CHUNK_SIZE, file.size - offset)) throw new Error('Decrypted file size does not match the manifest.');
+        await tar.write(plaintext);
+        received += plaintext.length;
+        progress(received, bytes);
+      }
+      await tar.endFile();
+    }
+    if (index !== chunks) throw new Error('The package record count is invalid.');
+    await frames.end();
+    controller.signal.throwIfAborted();
+    await tar.close();
+    progress(bytes, bytes);
+    $('download-stage').textContent = 'Decrypted & saved';
+    $('package-state').textContent = 'TRANSFER COMPLETE';
+    $('package-title').textContent = 'Delivered. Then disappeared.';
+    $('package-description').textContent = 'The one-time transfer is complete. Your decrypted files are inside the TAR archive.';
+    $('availability').textContent = 'Claimed — no longer on the server';
+    status(supportsStreaming ? 'Archive saved. Open the .tar file to access your files.' : 'Archive ready. If your browser did not save it automatically, use “Save decrypted .tar archive” below.');
+    $('download-button').hidden = true;
+    $('consent-label').hidden = true;
+    $('download-warning').hidden = true;
+    keyBytes.fill(0);
+    keyBytes = null;
+  } catch (error) {
+    const aborted = error.name === 'AbortError';
+    status(consumed
+      ? `${aborted ? 'Transfer cancelled.' : error.message} This transfer cannot be resumed. Ask the sender for a new package.`
+      : aborted ? 'Save cancelled. Your package has not been claimed.' : `Could not prepare a save destination. ${error.message} Your package has not been claimed.`, !aborted || consumed);
+    if (consumed) {
+      $('package-state').textContent = 'TRANSFER UNAVAILABLE';
+      $('availability').textContent = 'Claimed or unavailable';
+      $('download-stage').textContent = 'Transfer stopped — not recoverable';
+      keyBytes?.fill(0);
+      keyBytes = null;
+    }
+    controller?.abort();
+    await frames?.cancel();
+    try { await sink?.abort(); } catch { /* The destination may already be closed. */ }
+  } finally {
+    busy = false;
+    $('cancel-download').hidden = true;
+    updateButton();
+  }
+}
+
+async function initialize() {
+  const attempt = ++initialization;
+  available = false;
+  keyBytes?.fill(0);
+  keyBytes = null;
+  updateButton();
+  if (!route) {
+    fragment = '';
+    if (location.pathname !== '/') {
+      $('landing-title').textContent = 'This page wandered off.';
+      $('landing-card').querySelector('p').textContent = 'Check the complete package link from your sender.';
+    }
+    return;
+  }
+  $('landing-card').hidden = true;
+  $('package-card').hidden = false;
+  $('fallback-warning').hidden = supportsStreaming;
+  $('package-state').textContent = 'CHECKING';
+  $('package-title').textContent = 'A package, just for you.';
+  $('package-description').textContent = 'Checking whether your encrypted package is available. Opening this page does not download it.';
+  $('availability').textContent = 'Checking…';
+  $('download-button').hidden = false;
+  $('consent-label').hidden = false;
+  $('download-consent').checked = false;
+  $('download-warning').hidden = false;
+  $('download-progress').hidden = true;
+  $('download-meter').value = 0;
+  $('download-percent').textContent = '0%';
+  $('save-archive').hidden = true;
+  if (blobURL) { URL.revokeObjectURL(blobURL); blobURL = null; }
+  status('Checking availability. Nothing has been consumed.');
+  try {
+    if (!window.isSecureContext || !crypto.subtle) throw new Error('Browser encryption requires a secure HTTPS connection and Web Crypto support.');
+    keyBytes = decodeKey(fragment);
+    fragment = '';
+    const response = await fetch(`/api/packages/${encodeURIComponent(route[1])}`, { credentials: 'omit', cache: 'no-store', referrerPolicy: 'no-referrer' });
+    if (attempt !== initialization) return;
+    if (!response.ok) throw new Error(response.status === 404 || response.status === 410 ? 'This package does not exist, or it has already been claimed, expired, or deleted.' : 'Unable to check this package. Reopen the original complete link to try again; nothing has been consumed.');
+    const info = await response.json();
+    if (attempt !== initialization) return;
+    expiresAt = Date.parse(info.expiresAt);
+    if (info.status !== 'ready' || !Number.isFinite(expiresAt) || expiresAt <= Date.now()) throw new Error('This package is not available. Ask the sender for a new link.');
+    available = true;
+    $('package-state').textContent = 'READY WHEN YOU ARE';
+    $('availability').textContent = `Until ${new Date(expiresAt).toLocaleString()}`;
+    $('package-description').textContent = 'Your encrypted package is ready. File names and sizes stay private until you choose to download. The key was removed from your address bar.';
+    status('Nothing is downloaded or destroyed until you press the button.');
+  } catch (error) {
+    if (attempt !== initialization) return;
+    fragment = '';
+    keyBytes?.fill(0);
+    keyBytes = null;
+    $('package-state').textContent = 'UNAVAILABLE';
+    $('package-title').textContent = 'Not here to stay.';
+    $('package-description').textContent = 'Checking availability does not start a download.';
+    $('availability').textContent = 'Unavailable';
+    $('consent-label').hidden = true;
+    $('download-button').hidden = true;
+    $('download-warning').hidden = true;
+    status(error.message, true);
+  }
+  updateButton();
+}
+
+$('download-consent').addEventListener('change', updateButton);
+$('download-button').addEventListener('click', download);
+$('cancel-download').addEventListener('click', () => controller?.abort());
+window.addEventListener('hashchange', () => {
+  // Skip-link navigation is not a new package key.
+  if (!location.hash || location.hash === '#main') return;
+  fragment = location.hash.slice(1);
+  history.replaceState(null, '', location.pathname + location.search);
+  if (busy) { fragment = ''; return; }
+  initialize();
+});
+window.addEventListener('pagehide', () => {
+  ++initialization;
+  controller?.abort();
+  keyBytes?.fill(0);
+  keyBytes = null;
+  available = false;
+  updateButton();
+  if (blobURL) URL.revokeObjectURL(blobURL);
+});
+window.addEventListener('pageshow', event => {
+  if (event.persisted && route) {
+    $('save-archive').hidden = true;
+    status('For privacy, the key was forgotten when you left this page. Reopen the original complete link from your sender. Merely opening the link does not claim the package.', true);
+  }
+});
+window.addEventListener('beforeunload', event => {
+  if (busy) { event.preventDefault(); event.returnValue = ''; }
+});
+initialize();

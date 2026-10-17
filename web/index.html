@@ -1,0 +1,56 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="referrer" content="no-referrer">
+  <meta name="color-scheme" content="light">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self'; connect-src 'self'; img-src 'self'; font-src 'none'; object-src 'none'; base-uri 'none'; form-action 'none'">
+  <title>Drive — A little less permanent.</title>
+  <link rel="stylesheet" href="/styles.css">
+  <script type="module" src="/public.js"></script>
+</head>
+<body>
+  <a class="skip-link" href="#main">Skip to content</a>
+  <div class="public-shell">
+    <header class="site-header">
+      <a class="brand" href="/" aria-label="Drive home"><span class="brand-mark" aria-hidden="true">d<span>↗</span></span>drive<span class="brand-period">.</span></a>
+      <span class="header-label"><span class="status-dot" aria-hidden="true"></span>Private by design</span>
+    </header>
+    <main id="main" class="public-main">
+      <section class="hero" aria-labelledby="headline">
+        <p class="eyebrow"><span class="short-rule" aria-hidden="true"></span> LESS EXPOSURE. MORE PEACE OF MIND.</p>
+        <h1 id="headline">A little less<br><span>permanent.</span></h1>
+        <p class="hero-description">Some things aren’t meant to stay online.<br>Encrypted files. One download. Then gone.</p>
+        <div class="trust-row"><span class="tiny-icon" aria-hidden="true">↗</span><span>Encrypted in your browser.<br><strong>Only your link holds the key.</strong></span></div>
+      </section>
+      <section id="landing-card" class="transfer-card landing-card" aria-labelledby="landing-title">
+        <div class="card-topline"><span class="pill">ONE-TIME TRANSFERS</span><span class="card-number">01 / 01</span></div>
+        <div class="vault-art" aria-hidden="true"><div class="orbit orbit-one"></div><div class="orbit orbit-two"></div><div class="file-art"><span></span><i></i><i></i><i></i><div class="lock-art">↗</div></div><span class="art-spark">✳</span></div>
+        <h2 id="landing-title">Here for a moment.</h2>
+        <p>Received a package? Open the complete link from your sender to securely download your files.</p>
+        <div class="card-note"><span aria-hidden="true">◈</span>No account. No tracking. No second copies on the server after a successful transfer.</div>
+      </section>
+      <section id="package-card" class="transfer-card" aria-labelledby="package-title" hidden>
+        <div class="card-topline"><span class="pill">PRIVATE DELIVERY</span><span id="package-state" class="card-number">CHECKING</span></div>
+        <div class="package-icon" aria-hidden="true">↘</div>
+        <h2 id="package-title">A package, just for you.</h2>
+        <p id="package-description">Checking whether your encrypted package is available. Opening this page does not download it.</p>
+        <dl class="package-facts"><div><dt>Availability</dt><dd id="availability">Checking…</dd></div><div><dt>File format</dt><dd>Decrypted .tar archive</dd></div></dl>
+        <div id="download-warning" class="notice"><strong>One download. No undo.</strong><p>Starting the transfer claims and destroys the server copy. A closed tab, cancellation, or lost connection means the sender must create a new package.</p></div>
+        <div id="fallback-warning" class="notice warning" hidden><strong>Limited browser support</strong><p>This browser can only save archives up to 128 MiB, including TAR overhead. Size is encrypted and cannot be checked until the one-time transfer starts. A larger package will be lost. For large or unknown sizes, use desktop Chrome or Edge with “Save As” support instead.</p></div>
+        <label id="consent-label" class="check-row"><input id="download-consent" type="checkbox"><span>I understand this download cannot be repeated.</span></label>
+        <button id="download-button" class="button primary full-width" type="button" disabled><span>Download and destroy</span><span aria-hidden="true">↘</span></button>
+        <div id="download-progress" class="progress-area" hidden><div class="progress-copy"><span id="download-stage">Preparing…</span><span id="download-percent">0%</span></div><progress id="download-meter" value="0" max="100" aria-label="Download progress"></progress></div>
+        <button id="cancel-download" type="button" class="text-button danger" hidden>Cancel transfer (irreversible)</button>
+        <p class="fine-print">Files are saved together in a .tar archive. Open it with your operating system’s archive utility after the download completes.</p>
+        <p id="download-status" class="status-message" role="status" aria-live="polite"></p>
+        <a id="save-archive" class="button primary full-width" hidden>Save decrypted .tar archive ↘</a>
+        <noscript><p class="notice warning">JavaScript is required to decrypt this package. No files have been consumed.</p></noscript>
+      </section>
+      <section class="principles" aria-label="How your transfer stays private"><div><span class="principle-number">01</span><h3>Only you have the key</h3><p>File names and contents are encrypted before they leave the sender’s browser.</p></div><div><span class="principle-number">02</span><h3>One chance to download</h3><p>Each package can be claimed once. An interrupted transfer cannot be recovered.</p></div><div><span class="principle-number">03</span><h3>Nothing stays forever</h3><p>Unclaimed packages expire automatically at the time chosen by the sender.</p></div></section>
+    </main>
+    <footer class="site-footer"><span>Built for the things you don’t leave behind.</span><span>Private, not anonymous. The server sees IP addresses, sizes, and timing—not file names or contents.</span></footer>
+  </div>
+</body>
+</html>

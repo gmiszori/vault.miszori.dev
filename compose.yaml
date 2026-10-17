@@ -1,0 +1,66 @@
+services:
+  api:
+    build: .
+    restart: unless-stopped
+    environment:
+      ADMIN_USER: ${ADMIN_USER:-admin}
+      ADMIN_PASSWORD: ${ADMIN_PASSWORD:?Set a strong ADMIN_PASSWORD in .env}
+      PUBLIC_ORIGIN: https://${DOMAIN:-drive.miszori.dev}
+      MAX_STORAGE_BYTES: ${MAX_STORAGE_BYTES:-107374182400}
+    volumes:
+      - packages:/data
+    networks:
+      - backend
+    read_only: true
+    tmpfs:
+      - /tmp:size=16m,noexec,nosuid
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    pids_limit: 100
+    mem_limit: 256m
+    cpus: 2
+    stop_grace_period: 40s
+
+  caddy:
+    image: caddy:2.11-alpine
+    restart: unless-stopped
+    environment:
+      DOMAIN: ${DOMAIN:-drive.miszori.dev}
+      ACME_EMAIL: ${ACME_EMAIL:?Set ACME_EMAIL in .env}
+    ports:
+      - "${PUBLIC_BIND_IP:?Set the host public-facing interface IP}:80:80"
+      - "${PUBLIC_BIND_IP}:443:443"
+      - "${VPN_BIND_IP:-10.0.0.1}:80:8081"
+      - "${VPN_BIND_IP:-10.0.0.1}:443:8443"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - ./web:/srv:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    networks:
+      - edge
+      - backend
+    depends_on:
+      api:
+        condition: service_healthy
+    read_only: true
+    tmpfs:
+      - /tmp:size=16m,noexec,nosuid
+    cap_drop: [ALL]
+    cap_add: [NET_BIND_SERVICE]
+    security_opt: [no-new-privileges:true]
+    pids_limit: 100
+    mem_limit: 128m
+
+volumes:
+  packages:
+  caddy_data:
+  caddy_config:
+
+networks:
+  edge:
+  backend:
+    internal: true
+    ipam:
+      config:
+        - subnet: 172.30.0.0/24

@@ -1,0 +1,584 @@
+package main
+
+import (
+	"context"
+	"crypto/rand"
+	"crypto/sha256"
+	"crypto/subtle"
+	"encoding/binary"
+	"encoding/hex"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"io"
+	"log"
+	"net"
+	"net/http"
+	"os"
+	"os/signal"
+	"path/filepath"
+	"strconv"
+	"strings"
+	"sync"
+	"syscall"
+	"time"
+)
+
+const maxChunk = 8*1024*1024 + 16
+const maxChunks = 30000
+const maxPackageBytes int64 = 20*1024*1024*1024 + maxChunks*16 + 8*1024*1024
+
+type Package struct {
+	ID        string     `json:"id"`
+	Status    string     `json:"status"`
+	CreatedAt time.Time  `json:"createdAt"`
+	ExpiresAt time.Time  `json:"expiresAt"`
+	OpenedAt  *time.Time `json:"openedAt,omitempty"`
+	OpenedIP  string     `json:"openedIp,omitempty"`
+	Chunks    int        `json:"chunks"`
+	Bytes     int64      `json:"bytes"`
+	TokenHash string     `json:"-"`
+}
+type diskPackage struct {
+	Package
+	TokenHash string `json:"tokenHash"`
+}
+type bucket struct {
+	start time.Time
+	count int
+}
+type Server struct {
+	mu                           sync.Mutex
+	root, user, password, origin string
+	packages                     map[string]*Package
+	limits                       map[string]bucket
+	quota                        int64
+	now                          func() time.Time
+}
+
+func randomID() string {
+	b := make([]byte, 32)
+	if _, err := rand.Read(b); err != nil {
+		panic(err)
+	}
+	return hex.EncodeToString(b)
+}
+func hash(s string) string { h := sha256.Sum256([]byte(s)); return hex.EncodeToString(h[:]) }
+func validID(s string) bool {
+	b, e := hex.DecodeString(s)
+	return e == nil && len(b) == 32 && strings.ToLower(s) == s
+}
+func (s *Server) dir(id string) string { return filepath.Join(s.root, id) }
+func (s *Server) chunk(id string, n int) string {
+	return filepath.Join(s.dir(id), fmt.Sprintf("%06d.bin", n))
+}
+func (s *Server) save(p *Package) error {
+	b, err := json.Marshal(diskPackage{*p, p.TokenHash})
+	if err != nil {
+		return err
+	}
+	name := filepath.Join(s.dir(p.ID), "meta.json")
+	f, err := os.OpenFile(name+".tmp", os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0600)
+	if err != nil {
+		return err
+	}
+	if _, err = f.Write(b); err == nil {
+		err = f.Sync()
+	}
+	closeErr := f.Close()
+	if err != nil {
+		return err
+	}
+	if closeErr != nil {
+		return closeErr
+	}
+	if err = os.Rename(name+".tmp", name); err != nil {
+		return err
+	}
+	d, err := os.Open(s.dir(p.ID))
+	if err != nil {
+		return err
+	}
+	defer d.Close()
+	return d.Sync()
+}
+func (s *Server) purge(p *Package, status string) error {
+	entries, err := os.ReadDir(s.dir(p.ID))
+	if err != nil {
+		return err
+	}
+	for _, e := range entries {
+		if e.Name() != "meta.json" {
+			if err = os.RemoveAll(filepath.Join(s.dir(p.ID), e.Name())); err != nil {
+				return err
+			}
+		}
+	}
+	p.Status = status
+	p.TokenHash = ""
+	return s.save(p)
+}
+func newServer(root, user, password, origin string, quota int64) (*Server, error) {
+	s := &Server{root: root, user: user, password: password, origin: origin, quota: quota, packages: map[string]*Package{}, limits: map[string]bucket{}, now: time.Now}
+	if err := os.MkdirAll(root, 0700); err != nil {
+		return nil, err
+	}
+	entries, err := os.ReadDir(root)
+	if err != nil {
+		return nil, err
+	}
+	for _, e := range entries {
+		if !e.IsDir() || !validID(e.Name()) {
+			continue
+		}
+		b, err := os.ReadFile(filepath.Join(root, e.Name(), "meta.json"))
+		if errors.Is(err, os.ErrNotExist) {
+			if err = os.RemoveAll(filepath.Join(root, e.Name())); err != nil {
+				return nil, err
+			}
+			continue
+		}
+		if err != nil {
+			return nil, err
+		}
+		var d diskPackage
+		if err = json.Unmarshal(b, &d); err != nil {
+			return nil, err
+		}
+		if d.ID != e.Name() {
+			return nil, errors.New("invalid stored package ID")
+		}
+		p := d.Package
+		p.TokenHash = d.TokenHash
+		s.packages[p.ID] = &p
+		if p.Status == "consuming" || p.Status == "uploading" {
+			if err = s.purge(&p, "failed"); err != nil {
+				return nil, err
+			}
+		}
+	}
+	if err = s.sweep(); err != nil {
+		return nil, err
+	}
+	return s, nil
+}
+func (s *Server) sweep() error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	now := s.now()
+	for id, p := range s.packages {
+		if (p.Status == "uploading" || p.Status == "ready") && !now.Before(p.ExpiresAt) {
+			if err := s.purge(p, "expired"); err != nil {
+				return err
+			}
+		}
+		if p.Status != "ready" && p.Status != "uploading" && p.Status != "consuming" && now.Sub(p.ExpiresAt) > 90*24*time.Hour {
+			if err := os.RemoveAll(s.dir(id)); err != nil {
+				return err
+			}
+			delete(s.packages, id)
+		}
+	}
+	return nil
+}
+func writeJSON(w http.ResponseWriter, code int, v any) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(code)
+	_ = json.NewEncoder(w).Encode(v)
+}
+func fail(w http.ResponseWriter, code int, msg string) {
+	writeJSON(w, code, map[string]string{"error": msg})
+}
+func decode(w http.ResponseWriter, r *http.Request, v any) bool {
+	r.Body = http.MaxBytesReader(w, r.Body, 4096)
+	d := json.NewDecoder(r.Body)
+	d.DisallowUnknownFields()
+	if err := d.Decode(v); err != nil {
+		fail(w, 400, "Invalid request")
+		return false
+	}
+	if d.Decode(&struct{}{}) != io.EOF {
+		fail(w, 400, "Invalid request")
+		return false
+	}
+	return true
+}
+func peerIP(r *http.Request) string {
+	// Only the isolated Caddy network can supply this header. No backend port is published.
+	host, _, _ := net.SplitHostPort(r.RemoteAddr)
+	ip := net.ParseIP(host)
+	_, trusted, _ := net.ParseCIDR("172.30.0.0/24")
+	if trusted.Contains(ip) {
+		if real := net.ParseIP(r.Header.Get("X-Real-IP")); real != nil {
+			return real.String()
+		}
+	}
+	return host
+}
+func (s *Server) allowed(key string, n int) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	now := s.now()
+	b := s.limits[key]
+	if now.Sub(b.start) >= time.Minute {
+		b = bucket{start: now}
+	}
+	b.count++
+	if len(s.limits) > 10000 {
+		for k, v := range s.limits {
+			if now.Sub(v.start) >= time.Minute {
+				delete(s.limits, k)
+			}
+		}
+		if len(s.limits) > 10000 {
+			return false
+		}
+	}
+	s.limits[key] = b
+	return b.count <= n
+}
+func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	controller := http.NewResponseController(w)
+	_ = controller.SetReadDeadline(time.Now().Add(2 * time.Minute))
+	defer controller.SetReadDeadline(time.Time{})
+	w.Header().Set("Cache-Control", "no-store")
+	w.Header().Set("X-Content-Type-Options", "nosniff")
+	w.Header().Set("Referrer-Policy", "no-referrer")
+	if r.URL.Path == "/healthz" && r.Method == "GET" {
+		writeJSON(w, 200, map[string]bool{"ok": true})
+		return
+	}
+	admin := strings.HasPrefix(r.URL.Path, "/api/admin/")
+	if admin {
+		u, p, ok := r.BasicAuth()
+		uh, ph := sha256.Sum256([]byte(u)), sha256.Sum256([]byte(p))
+		wantU, wantP := sha256.Sum256([]byte(s.user)), sha256.Sum256([]byte(s.password))
+		if !ok || subtle.ConstantTimeCompare(uh[:], wantU[:])&subtle.ConstantTimeCompare(ph[:], wantP[:]) != 1 {
+			if !s.allowed("auth:"+peerIP(r), 20) {
+				fail(w, 429, "Too many attempts")
+				return
+			}
+			fail(w, 401, "Authentication required")
+			return
+		}
+		if r.Header.Get("Origin") != "" {
+			origin := r.Header.Get("Origin")
+			if origin != "http://"+r.Host && origin != "https://"+r.Host {
+				fail(w, 403, "Cross-origin request denied")
+				return
+			}
+		}
+		if r.Header.Get("Sec-Fetch-Site") == "cross-site" {
+			fail(w, 403, "Cross-origin request denied")
+			return
+		}
+		s.admin(w, r)
+		return
+	}
+	if !s.allowed("public:"+peerIP(r), 120) {
+		fail(w, 429, "Too many requests")
+		return
+	}
+	parts := strings.Split(strings.Trim(r.URL.Path, "/"), "/")
+	if len(parts) < 3 || parts[0] != "api" || parts[1] != "packages" || !validID(parts[2]) {
+		fail(w, 404, "Package already viewed or does not exist")
+		return
+	}
+	id := parts[2]
+	if len(parts) == 4 && parts[3] == "consume" && r.Method == "POST" {
+		if r.Header.Get("Sec-Fetch-Site") == "cross-site" {
+			fail(w, 403, "Cross-origin request denied")
+			return
+		}
+		s.consume(w, r, id)
+		return
+	}
+	if len(parts) == 3 && r.Method == "GET" {
+		s.mu.Lock()
+		defer s.mu.Unlock()
+		p := s.packages[id]
+		if p == nil || p.Status != "ready" || !s.now().Before(p.ExpiresAt) {
+			fail(w, 404, "Package already viewed or does not exist")
+			return
+		}
+		writeJSON(w, 200, map[string]any{"status": "ready", "expiresAt": p.ExpiresAt})
+		return
+	}
+	fail(w, 404, "Not found")
+}
+func (s *Server) admin(w http.ResponseWriter, r *http.Request) {
+	path := strings.TrimPrefix(r.URL.Path, "/api/admin/")
+	if path == "config" && r.Method == "GET" {
+		writeJSON(w, 200, map[string]string{"publicOrigin": s.origin})
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if path == "packages" && r.Method == "GET" {
+		ps := make([]Package, 0, len(s.packages))
+		for _, p := range s.packages {
+			ps = append(ps, *p)
+		}
+		writeJSON(w, 200, map[string]any{"packages": ps})
+		return
+	}
+	if path == "packages" && r.Method == "POST" {
+		var req struct {
+			TTL int64 `json:"ttlSeconds"`
+		}
+		if !decode(w, r, &req) {
+			return
+		}
+		if req.TTL < 60 || req.TTL > 30*86400 {
+			fail(w, 400, "Expiry must be between 60 seconds and 30 days")
+			return
+		}
+		active := 0
+		for _, p := range s.packages {
+			if p.Status == "uploading" || p.Status == "ready" || p.Status == "consuming" {
+				active++
+			}
+		}
+		if active >= 100 {
+			fail(w, 429, "Too many active packages")
+			return
+		}
+		now := s.now()
+		token := randomID()
+		p := &Package{ID: randomID(), Status: "uploading", CreatedAt: now, ExpiresAt: now.Add(time.Duration(req.TTL) * time.Second), TokenHash: hash(token)}
+		if err := os.Mkdir(s.dir(p.ID), 0700); err != nil {
+			fail(w, 500, "Storage unavailable")
+			return
+		}
+		if err := s.save(p); err != nil {
+			_ = os.RemoveAll(s.dir(p.ID))
+			fail(w, 500, "Storage unavailable")
+			return
+		}
+		s.packages[p.ID] = p
+		writeJSON(w, 201, map[string]any{"id": p.ID, "uploadToken": token, "expiresAt": p.ExpiresAt})
+		return
+	}
+	parts := strings.Split(path, "/")
+	if len(parts) < 2 || parts[0] != "packages" || !validID(parts[1]) {
+		fail(w, 404, "Not found")
+		return
+	}
+	p := s.packages[parts[1]]
+	if p == nil {
+		fail(w, 404, "Not found")
+		return
+	}
+	if len(parts) == 2 && r.Method == "DELETE" {
+		if p.Status == "consuming" {
+			fail(w, 409, "Download in progress")
+			return
+		}
+		if err := s.purge(p, "deleted"); err != nil {
+			fail(w, 500, "Deletion failed")
+			return
+		}
+		w.WriteHeader(204)
+		return
+	}
+	if p.Status != "uploading" || !s.now().Before(p.ExpiresAt) {
+		fail(w, 409, "Package not uploading")
+		return
+	}
+	token := hash(r.Header.Get("X-Upload-Token"))
+	if subtle.ConstantTimeCompare([]byte(token), []byte(p.TokenHash)) != 1 {
+		fail(w, 403, "Invalid upload token")
+		return
+	}
+	if len(parts) == 4 && parts[2] == "chunks" && r.Method == "PUT" {
+		n, err := strconv.Atoi(parts[3])
+		if err != nil || n < 0 || n >= maxChunks {
+			fail(w, 400, "Invalid chunk index")
+			return
+		}
+		if n != p.Chunks {
+			fail(w, 409, "Chunks must be uploaded in order; retries must reuse the next index")
+			return
+		}
+		var used int64
+		for _, other := range s.packages {
+			if other.Status == "ready" || other.Status == "uploading" || other.Status == "consuming" {
+				used += other.Bytes
+			}
+		}
+		f, err := os.OpenFile(s.chunk(p.ID, n)+".tmp", os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0600)
+		if err != nil {
+			fail(w, 500, "Storage unavailable")
+			return
+		}
+		count, err := io.Copy(f, http.MaxBytesReader(w, r.Body, maxChunk))
+		if err == nil {
+			err = f.Sync()
+		}
+		closeErr := f.Close()
+		if err == nil {
+			err = closeErr
+		}
+		if err != nil || count < 16 || p.Bytes+count > maxPackageBytes || used+count > s.quota {
+			_ = os.Remove(s.chunk(p.ID, n) + ".tmp")
+			fail(w, 413, "Chunk, package, or storage limit exceeded")
+			return
+		}
+		if err = os.Rename(s.chunk(p.ID, n)+".tmp", s.chunk(p.ID, n)); err != nil {
+			fail(w, 500, "Storage unavailable")
+			return
+		}
+		p.Chunks++
+		p.Bytes += count
+		if err = s.save(p); err != nil {
+			_ = s.purge(p, "failed")
+			fail(w, 500, "Storage unavailable")
+			return
+		}
+		w.WriteHeader(204)
+		return
+	}
+	if len(parts) == 3 && parts[2] == "finalize" && r.Method == "POST" {
+		var req struct {
+			Chunks int `json:"chunks"`
+		}
+		if !decode(w, r, &req) {
+			return
+		}
+		if req.Chunks != p.Chunks || req.Chunks < 1 {
+			fail(w, 400, "Incomplete package")
+			return
+		}
+		p.Status = "ready"
+		p.TokenHash = ""
+		if err := s.save(p); err != nil {
+			p.Status = "failed"
+			_ = s.purge(p, "failed")
+			fail(w, 500, "Storage unavailable")
+			return
+		}
+		w.WriteHeader(204)
+		return
+	}
+	fail(w, 404, "Not found")
+}
+func (s *Server) consume(w http.ResponseWriter, r *http.Request, id string) {
+	s.mu.Lock()
+	p := s.packages[id]
+	if p == nil || p.Status != "ready" || !s.now().Before(p.ExpiresAt) {
+		s.mu.Unlock()
+		fail(w, 404, "Package already viewed or does not exist")
+		return
+	}
+	now := s.now()
+	p.Status = "consuming"
+	p.OpenedAt = &now
+	p.OpenedIP = peerIP(r)
+	if err := s.save(p); err != nil {
+		p.Status = "failed"
+		_ = s.purge(p, "failed")
+		s.mu.Unlock()
+		fail(w, 500, "Storage unavailable")
+		return
+	}
+	s.mu.Unlock()
+	completed := false
+	defer func() {
+		s.mu.Lock()
+		defer s.mu.Unlock()
+		status := "failed"
+		if completed {
+			status = "consumed"
+		}
+		if err := s.purge(p, status); err != nil {
+			log.Print("ERROR: ciphertext cleanup failed; manual intervention required")
+		}
+	}()
+	w.Header().Set("Content-Type", "application/octet-stream")
+	w.Header().Set("Content-Disposition", `attachment; filename="encrypted-package.bin"`)
+	w.Header().Set("Content-Length", strconv.FormatInt(p.Bytes+int64(4*p.Chunks), 10))
+	controller := http.NewResponseController(w)
+	for n := 0; n < p.Chunks; n++ {
+		if r.Context().Err() != nil {
+			return
+		}
+		f, err := os.Open(s.chunk(id, n))
+		if err != nil {
+			return
+		}
+		info, err := f.Stat()
+		if err != nil {
+			f.Close()
+			return
+		}
+		// Unlink before sending: no later request can reopen even a partially delivered record.
+		if err = os.Remove(s.chunk(id, n)); err != nil {
+			f.Close()
+			return
+		}
+		var header [4]byte
+		binary.BigEndian.PutUint32(header[:], uint32(info.Size()))
+		_ = controller.SetWriteDeadline(time.Now().Add(2 * time.Minute))
+		if _, err = w.Write(header[:]); err == nil {
+			_, err = io.Copy(w, f)
+		}
+		f.Close()
+		if err != nil {
+			return
+		}
+	}
+	completed = true
+}
+func env(key, def string) string {
+	if v := os.Getenv(key); v != "" {
+		return v
+	}
+	return def
+}
+func main() {
+	password := os.Getenv("ADMIN_PASSWORD")
+	if len(password) < 16 {
+		log.Fatal("ADMIN_PASSWORD must be at least 16 characters")
+	}
+	origin := env("PUBLIC_ORIGIN", "https://drive.miszori.dev")
+	quota, err := strconv.ParseInt(env("MAX_STORAGE_BYTES", "107374182400"), 10, 64)
+	if err != nil || quota < maxChunk {
+		log.Fatal("Invalid MAX_STORAGE_BYTES")
+	}
+	s, err := newServer(env("DATA_DIR", "/data"), env("ADMIN_USER", "admin"), password, origin, quota)
+	if err != nil {
+		log.Fatal("Cannot initialize storage: ", err)
+	}
+	server := &http.Server{Addr: ":8080", Handler: s, ReadHeaderTimeout: 10 * time.Second, IdleTimeout: 60 * time.Second, MaxHeaderBytes: 16384}
+	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	defer cancel()
+	go func() {
+		ticker := time.NewTicker(15 * time.Second)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				if err := s.sweep(); err != nil {
+					log.Print("ERROR: expiry cleanup failed")
+				}
+			}
+		}
+	}()
+	shutdownDone := make(chan struct{})
+	go func() {
+		defer close(shutdownDone)
+		<-ctx.Done()
+		shutdown, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+		if err := server.Shutdown(shutdown); err != nil {
+			_ = server.Close()
+		}
+	}()
+	log.Print("Encrypted package service listening on :8080")
+	if err = server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+		log.Fatal(err)
+	}
+	<-shutdownDone
+}

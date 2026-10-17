@@ -1,0 +1,78 @@
+{
+	admin off
+	auto_https off
+}
+
+(headers) {
+	header {
+		Content-Security-Policy "default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'self'; font-src 'self'; base-uri 'none'; frame-ancestors 'none'; form-action 'self'; object-src 'none'"
+		Referrer-Policy no-referrer
+		X-Content-Type-Options nosniff
+		Cache-Control no-store
+	}
+}
+
+(proxy) {
+	reverse_proxy api:8080 {
+		header_up X-Real-IP {remote_host}
+		header_up -Forwarded
+		header_up -X-Forwarded-For
+		flush_interval -1
+	}
+}
+
+:8080 {
+	import headers
+	root * /srv
+	@private path /admin /admin/* /admin.html /admin.js /api/admin /api/admin/*
+	handle @private {
+		respond "Not found" 404
+	}
+	handle /api/* {
+		import proxy
+	}
+	@page path / /package/*
+	handle @page {
+		rewrite * /index.html
+		file_server
+	}
+	@assets path /styles.css /public.js /crypto.js /tar.js
+	handle @assets {
+		file_server
+	}
+	handle {
+		respond "Not found" 404
+	}
+}
+
+:8081 {
+	import headers
+	root * /srv
+	handle /admin/api/* {
+		uri replace /admin/api/ /api/admin/ 1
+		import proxy
+	}
+	@direct_admin path /api/admin /api/admin/*
+	handle @direct_admin {
+		respond "Not found" 404
+	}
+	handle /api/* {
+		import proxy
+	}
+	@page path / /admin /admin/
+	handle @page {
+		rewrite * /admin.html
+		file_server
+	}
+	handle /package/* {
+		rewrite * /index.html
+		file_server
+	}
+	@assets path /styles.css /admin.js /public.js /crypto.js /tar.js
+	handle @assets {
+		file_server
+	}
+	handle {
+		respond "Not found" 404
+	}
+}

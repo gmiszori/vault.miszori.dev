@@ -1,0 +1,8 @@
+{
+  "name": "one-time-drive-web",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test:web": "node --test web/*.test.mjs"
+  }
+}
