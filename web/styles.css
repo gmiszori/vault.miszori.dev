@@ -94,6 +94,9 @@ progress { display: block; width: 100%; height: 10px; border: 0; border-radius: 
 progress::-webkit-progress-bar { background: var(--line); }
 progress::-webkit-progress-value { background: var(--focus); }
 progress::-moz-progress-bar { background: var(--focus); }
+progress.is-complete { accent-color: var(--success); }
+progress.is-complete::-webkit-progress-value { background: var(--success); }
+progress.is-complete::-moz-progress-bar { background: var(--success); }
 #save-archive { margin-top: 16px; }
 .drop-zone { padding: 20px; border: 1px dashed var(--line); border-radius: 6px; }
 .drop-zone.drag-over { border-color: var(--focus); background: var(--input); }

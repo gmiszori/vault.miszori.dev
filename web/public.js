@@ -171,6 +171,7 @@ async function download() {
     controller.signal.throwIfAborted();
     await archive.close();
     progress(bytes, bytes);
+    $('download-meter').classList.toggle('is-complete', true);
     $('download-stage').textContent = 'Decrypted & saved';
     packageState('Downloaded');
     $('package-title').textContent = 'Package downloaded';
@@ -225,7 +226,7 @@ async function initialize() {
   blobFallbackOffered = !supportsLocalStreaming;
   $('fallback-warning').hidden = supportsStreaming || supportsLocalStreaming;
   packageState('Checking');
-  $('package-title').textContent = 'Download package';
+  $('package-title').textContent = 'Package ready to download';
   $('package-description').textContent = 'Checking availability. Opening this page does not start a download.';
   $('availability').textContent = 'Checking…';
   $('download-button').hidden = false;
@@ -233,6 +234,7 @@ async function initialize() {
   $('download-consent').checked = false;
   $('download-warning').hidden = false;
   $('download-progress').hidden = true;
+  $('download-meter').classList.toggle('is-complete', false);
   $('download-meter').value = 0;
   $('download-percent').textContent = '0%';
   $('save-archive').hidden = true;

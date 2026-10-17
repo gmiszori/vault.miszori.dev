@@ -236,6 +236,8 @@ test('save picker runs before consuming, and writable output is streamed without
     await until(() => ui.$('package-state').textContent === 'Ready');
     ui.$('download-consent').checked = true;
     assert.equal(ui.$('package-description').textContent, '');
+    assert.equal(ui.$('package-title').textContent, 'Package ready to download');
+    assert.equal(ui.$('download-meter').classList.contains('is-complete'), false);
     assert.equal(ui.$('download-consent').disabled, false);
     const downloading = ui.$('download-button').dispatch('click');
     assert.equal(ui.$('download-consent').disabled, true);
@@ -246,6 +248,7 @@ test('save picker runs before consuming, and writable output is streamed without
     assert.equal(output.length, archiveSize(files));
     assertZip(output, files, [content, new Uint8Array()]);
     assert.equal(ui.blobs.length, 0);
+    assert.equal(ui.$('download-meter').classList.contains('is-complete'), true);
     assert.equal(ui.$('download-consent').disabled, true);
     assert.equal(ui.$('package-state').classList.contains('status-downloading'), false);
   } finally { ui.restore(); }
@@ -362,6 +365,7 @@ test('an incomplete transfer aborts the destination and can never be retried', a
     await ui.$('download-button').dispatch('click');
     await ui.$('download-button').dispatch('click');
     assert.equal(consumes, 1); assert.equal(aborts, 1); assert.equal(closes, 0);
+    assert.equal(ui.$('download-meter').classList.contains('is-complete'), false);
     assert.equal(ui.$('package-state').textContent, 'Unavailable');
     assert.equal(ui.$('package-title').textContent, 'Package unavailable');
     assert.match(ui.$('package-description').textContent, /cannot be resumed/);
@@ -396,6 +400,7 @@ test('same-document reopening strips the key, resets consent, and reports consum
     await until(() => ui.$('package-state').textContent === 'Unavailable');
     assert.equal(location.hash, '');
     assert.equal(gets, 2);
+    assert.equal(ui.$('download-meter').classList.contains('is-complete'), false);
     assert.equal(consumes, 1);
     assert.equal(ui.$('save-archive').hidden, true);
     assert.equal(ui.$('download-consent').checked, false);
@@ -718,6 +723,9 @@ test('dark palette provides readable text, blue controls and keyboard focus', as
   assert.match(css, /\.status-downloading\s*\{[^}]*color: #facc15/);
   assert.ok(contrast('#facc15', colors.surface) >= 4.5, 'downloading yellow has readable contrast');
   assert.match(css, /#package-description:empty\s*\{[^}]*display: none/);
+  for (const selector of ['progress.is-complete', 'progress.is-complete::-webkit-progress-value', 'progress.is-complete::-moz-progress-bar']) {
+    assert.ok(css.includes(`${selector} { ${selector === 'progress.is-complete' ? 'accent-color' : 'background'}: var(--success); }`));
+  }
   assert.match(css, /\.status-unavailable\s*\{[^}]*color: var\(--danger\)/);
   assert.match(css, /\.notice\.one-time-warning\s*\{[^}]*border-color: var\(--danger\); color: var\(--danger\)/);
   assert.match(css, /\.notice\.one-time-warning strong\s*\{[^}]*color: var\(--danger\)/);
@@ -755,7 +763,8 @@ test('HTML entrypoints reference only the agreed self-hosted assets and contain 
     assert.ok(!/<script(?![^>]*src=)|<style|\son\w+=|\sstyle=/i.test(html));
     assert.match(html, /Content-Security-Policy/);
     const references = [...html.matchAll(/(?:src|href)="([^"]+)"/g)].map(match => match[1]);
-    const allowed = new Set(['/styles.css', '/public.js', '/admin.js', '/', '/admin/', '#main']);
+    assert.match(html, /<link rel="icon" type="image\/svg\+xml" href="\/favicon.svg">/);
+    const allowed = new Set(['/styles.css', '/public.js', '/admin.js', '/favicon.svg', '/', '/admin/', '#main']);
     for (const reference of references) assert.ok(allowed.has(reference), `Allowed asset or navigation: ${reference}`);
   }
 });

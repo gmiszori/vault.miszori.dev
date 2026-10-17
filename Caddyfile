@@ -55,7 +55,7 @@
 
 http://{$DOMAIN} {
 	handle / {
-		respond "" 444
+		redir https://gergo.miszori.dev 302
 	}
 	handle {
 		redir https://{$DOMAIN}{uri} 308
@@ -66,7 +66,7 @@ https://{$DOMAIN} {
 	import common_headers
 	root * /srv
 	handle / {
-		respond "" 444
+		redir https://gergo.miszori.dev 302
 	}
 	handle /local-download/* {
 		respond "" 404
@@ -84,7 +84,7 @@ https://{$DOMAIN} {
 		templates
 		file_server
 	}
-	@assets path /styles.css /public.js /crypto.js /zip.js /download.js /download-worker.js /share-preview.png
+	@assets path /styles.css /public.js /crypto.js /zip.js /download.js /download-worker.js /share-preview.png /favicon.svg
 	handle @assets {
 		file_server
 	}
@@ -95,7 +95,7 @@ https://{$DOMAIN} {
 
 :8081 {
 	handle / {
-		respond "" 444
+		redir https://gergo.miszori.dev 302
 	}
 	handle {
 		redir https://{$DOMAIN}{uri} 308
@@ -106,7 +106,7 @@ https://{$DOMAIN}:8443 {
 	import common_headers
 	root * /srv
 	handle / {
-		respond "" 444
+		redir https://gergo.miszori.dev 302
 	}
 	handle /local-download/* {
 		respond "" 404
@@ -132,7 +132,7 @@ https://{$DOMAIN}:8443 {
 		templates
 		file_server
 	}
-	@assets path /styles.css /admin.js /public.js /crypto.js /zip.js /names.js /auth.js /download.js /download-worker.js /share-preview.png
+	@assets path /styles.css /admin.js /public.js /crypto.js /zip.js /names.js /auth.js /download.js /download-worker.js /share-preview.png /favicon.svg
 	handle @assets {
 		file_server
 	}
