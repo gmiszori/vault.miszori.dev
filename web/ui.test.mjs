@@ -237,6 +237,7 @@ test('save picker runs before consuming, and writable output is streamed without
     ui.$('download-consent').checked = true;
     assert.equal(ui.$('package-description').textContent, '');
     assert.equal(ui.$('package-title').textContent, 'Package ready to download');
+    assert.equal(ui.$('download-status').textContent, '');
     assert.equal(ui.$('download-meter').classList.contains('is-complete'), false);
     assert.equal(ui.$('download-consent').disabled, false);
     const downloading = ui.$('download-button').dispatch('click');
@@ -755,6 +756,16 @@ test('mobile audit overflow stays inside its scroller, including positioned acce
   assert.match(inputs, /min-width:\s*0/);
   assert.match(inputs, /max-width:\s*100%/);
   assert.doesNotMatch(css, /(?:html|body)\s*\{[^}]*overflow(?:-x)?:\s*(?:hidden|clip)/);
+});
+
+test('production and test roots consistently redirect to the personal site', async () => {
+  for (const [file, count] of [['../Caddyfile', 4], ['../tests/Caddyfile', 2]]) {
+    const config = await readFile(new URL(file, import.meta.url), 'utf8');
+    const roots = [...config.matchAll(/handle \/ \{([^}]+)\}/g)];
+    assert.equal(roots.length, count);
+    for (const [, body] of roots) assert.equal(body.trim(), 'redir https://gergo.miszori.dev 302');
+    assert.match(config, /handle (?:@page|\/package\/\*)/);
+  }
 });
 
 test('HTML entrypoints reference only the agreed self-hosted assets and contain no inline scripts or styles', async () => {

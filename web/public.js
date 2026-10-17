@@ -255,7 +255,7 @@ async function initialize() {
     packageState('Ready');
     $('availability').textContent = `Until ${new Date(expiresAt).toLocaleString()}`;
     $('package-description').textContent = '';
-    status('Nothing is downloaded or destroyed until you press the button.');
+    status('');
   } catch (error) {
     if (attempt !== initialization) return;
     fragment = '';
