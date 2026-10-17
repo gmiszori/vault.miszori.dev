@@ -1,11 +1,14 @@
 import { CHUNK_SIZE, MEMORY_LIMIT, decodeKey, importKey, decryptChunk, parseManifest, FramedReader, formatBytes } from './crypto.js';
 import { ZipWriter, archiveSize } from './zip.js';
+import { prepareServiceWorkerDownload } from './download.js';
 
 let fragment = location.hash.slice(1);
 if (location.hash) history.replaceState(null, '', location.pathname + location.search);
 const $ = id => document.getElementById(id);
 const route = /^\/package\/([A-Za-z0-9_-]{1,128})\/?$/.exec(location.pathname);
 const supportsStreaming = typeof window.showSaveFilePicker === 'function' && window.isSecureContext;
+const supportsLocalStreaming = window.isSecureContext && Boolean(globalThis.navigator?.serviceWorker) && typeof MessageChannel === 'function' && typeof ReadableStream === 'function';
+let blobFallbackOffered = !supportsLocalStreaming;
 let keyBytes;
 let available = false;
 let busy = false;
@@ -69,6 +72,9 @@ async function download() {
   let consumed = false;
   let sink;
   let frames;
+  let boundedFallback = false;
+  let localStream = false;
+  controller = new AbortController();
   try {
     // Invoke the picker during the click gesture, before any asynchronous work.
     const destination = supportsStreaming ? await window.showSaveFilePicker({
@@ -76,13 +82,32 @@ async function download() {
       types: [{ description: 'ZIP archive (all package files)', accept: { 'application/zip': ['.zip'] } }]
     }) : null;
     if (destination) sink = await destination.createWritable();
-    else sink = memorySink(filename);
+    else {
+      if (!blobFallbackOffered) {
+        sink = await prepareServiceWorkerDownload({ signal: controller.signal, onFailure: error => controller.abort(error) });
+        if (!sink) {
+          blobFallbackOffered = true;
+          $('fallback-warning').hidden = false;
+          $('download-consent').checked = false;
+          status('Streaming downloads are unavailable. The fallback is limited to 128 MiB, and encrypted package sizes cannot be checked before claiming. Nothing has been claimed. For larger or unknown packages, use a browser with working streaming downloads. To accept this limit, check consent again and press Download.');
+          return;
+        }
+      }
+      localStream = Boolean(sink);
+      if (!sink) {
+        sink = memorySink(filename);
+        boundedFallback = true;
+      }
+    }
+    $('fallback-warning').hidden = !boundedFallback;
     const key = await importKey(keyBytes);
-    controller = new AbortController();
+    controller.signal.throwIfAborted();
     $('download-progress').hidden = false;
     $('cancel-download').hidden = false;
     $('download-stage').textContent = 'Claiming encrypted package…';
-    status('Keep this tab open. Starting this transfer cannot be undone.');
+    status(localStream
+      ? 'Keep this tab open. Browser download restrictions (including Safari/iOS or private mode), storage limits, or background suspension may interrupt saving. Starting this transfer cannot be undone.'
+      : 'Keep this tab open. Starting this transfer cannot be undone.');
     consumed = true;
     available = false;
     const response = await fetch(`/api/packages/${encodeURIComponent(id)}/consume`, {
@@ -96,9 +121,11 @@ async function download() {
     }
     frames = new FramedReader(response.body);
     const { manifest, bytes, chunks } = parseManifest(await decryptChunk(key, id, 0, await frames.record()));
-    if (!supportsStreaming && archiveSize(manifest.files) > MEMORY_LIMIT) {
-      throw new Error('This archive is larger than the 128 MiB browser limit. No file data was saved. The one-time transfer has already been claimed; ask the sender for a new link and use desktop Chrome or Edge.');
+    const size = archiveSize(manifest.files);
+    if (boundedFallback && size > MEMORY_LIMIT) {
+      throw new Error('This archive is larger than the 128 MiB browser limit. No file data was saved. The one-time transfer has already been claimed; ask the sender for a new link and use a browser with supported streaming downloads, such as desktop Chrome or Edge.');
     }
+    if (localStream) await sink.initialize(filename, size);
     const archive = new ZipWriter(sink);
     let index = 1;
     let received = 0;
@@ -124,7 +151,7 @@ async function download() {
     $('package-title').textContent = 'Package downloaded';
     $('package-description').textContent = 'Your files are in the ZIP archive. The server copy has been destroyed.';
     $('availability').textContent = 'Claimed — no longer on the server';
-    status(supportsStreaming ? 'Archive saved. Open the .zip file to access your files.' : 'Archive ready. If your browser did not save it automatically, use “Save decrypted ZIP archive” below.');
+    status(boundedFallback ? 'Archive ready. If your browser did not save it automatically, use “Save decrypted ZIP archive” below.' : localStream ? 'Archive sent to your browser’s download manager. Check that it finished saving before closing this tab.' : 'Archive saved. Open the .zip file to access your files.');
     $('download-button').hidden = true;
     $('consent-label').hidden = true;
     $('download-warning').hidden = true;
@@ -168,7 +195,8 @@ async function initialize() {
   }
   $('landing-card').hidden = true;
   $('package-card').hidden = false;
-  $('fallback-warning').hidden = supportsStreaming;
+  blobFallbackOffered = !supportsLocalStreaming;
+  $('fallback-warning').hidden = supportsStreaming || supportsLocalStreaming;
   $('package-state').textContent = 'Checking';
   $('package-title').textContent = 'Download package';
   $('package-description').textContent = 'Checking availability. Opening this page does not start a download.';

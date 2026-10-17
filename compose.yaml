@@ -4,7 +4,7 @@ services:
     restart: unless-stopped
     environment:
       ADMIN_USER: ${ADMIN_USER:-admin}
-      ADMIN_PASSWORD: ${ADMIN_PASSWORD:?Set a strong ADMIN_PASSWORD in .env}
+      ADMIN_SETUP_TOKEN: ${ADMIN_SETUP_TOKEN:-}
       PUBLIC_ORIGIN: https://${DOMAIN:-drive.miszori.dev}
       MAX_STORAGE_BYTES: ${MAX_STORAGE_BYTES:-107374182400}
     volumes:

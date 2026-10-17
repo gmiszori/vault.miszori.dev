@@ -57,7 +57,7 @@ func TestLabelConfigAndSaltPersistence(t *testing.T) {
 	}
 	id := readyPackage(t, s)
 	patchLabel(t, s, id, nameEnvelope(17))
-	restarted, err := newServer(s.root, "other-admin", "different-password-456", "https://new.example", s.quota)
+	restarted, err := newServer(s.root, "other-admin", "", "https://new.example", s.quota)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -94,7 +94,7 @@ func TestMissingOrInvalidLabelSaltFailsClosed(t *testing.T) {
 			if err := os.Remove(filepath.Join(s.root, "label-salt")); err != nil {
 				t.Fatal(err)
 			}
-			if _, err := newServer(s.root, s.user, s.password, s.origin, s.quota); err == nil {
+			if _, err := newServer(s.root, s.user, "", s.origin, s.quota); err == nil {
 				t.Fatal("missing salt silently regenerated")
 			}
 			after, err := os.ReadFile(filepath.Join(s.dir(id), "meta.json"))
@@ -111,7 +111,7 @@ func TestMissingOrInvalidLabelSaltFailsClosed(t *testing.T) {
 		if err := os.WriteFile(filepath.Join(s.root, "label-salt"), make([]byte, length), 0600); err != nil {
 			t.Fatal(err)
 		}
-		if _, err := newServer(s.root, s.user, s.password, s.origin, s.quota); err == nil {
+		if _, err := newServer(s.root, s.user, "", s.origin, s.quota); err == nil {
 			t.Fatalf("invalid salt length %d accepted", length)
 		}
 	}
@@ -123,7 +123,7 @@ func TestLegacyMetadataWithoutSaltOrNewFields(t *testing.T) {
 	if err := os.Remove(filepath.Join(s.root, "label-salt")); err != nil {
 		t.Fatal(err)
 	}
-	restarted, err := newServer(s.root, s.user, s.password, s.origin, s.quota)
+	restarted, err := newServer(s.root, s.user, "", s.origin, s.quota)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -196,7 +196,7 @@ func TestEncryptedNameAuthAndOrigins(t *testing.T) {
 	}
 	for _, header := range []string{"Origin", "Sec-Fetch-Site"} {
 		r := httptest.NewRequest("PATCH", path, bytes.NewReader(patchBody(nameEnvelope(17))))
-		r.SetBasicAuth(s.user, s.password)
+		r.SetBasicAuth(s.user, testAuthentication)
 		value := "https://evil.example"
 		if header == "Sec-Fetch-Site" {
 			value = "cross-site"
@@ -268,7 +268,7 @@ func TestPrivateMetadataProtocolAndRetention(t *testing.T) {
 					t.Fatal("delete failed")
 				}
 			}
-			restarted, err := newServer(s.root, s.user, s.password, s.origin, s.quota)
+			restarted, err := newServer(s.root, s.user, "", s.origin, s.quota)
 			if err != nil {
 				t.Fatal(err)
 			}

@@ -25,16 +25,6 @@ export function validateName(value) {
   return name;
 }
 
-export async function deriveNameKey(passphrase, config) {
-  validateLabelKey(config);
-  if (typeof passphrase !== 'string' || [...passphrase].length < 16 || passphrase.length > 1024) throw new Error('Use a separate passphrase of 16–1,024 characters.');
-  const bytes = encoder.encode(passphrase);
-  try {
-    const material = await crypto.subtle.importKey('raw', bytes, 'PBKDF2', false, ['deriveKey']);
-    return await crypto.subtle.deriveKey({ name: 'PBKDF2', hash: 'SHA-256', salt: decode(config.salt, 16, 16), iterations: config.iterations }, material, { name: 'AES-GCM', length: 256 }, false, ['encrypt', 'decrypt']);
-  } finally { bytes.fill(0); }
-}
-
 function aad(id) {
   if (typeof id !== 'string' || !/^[A-Za-z0-9_-]{1,128}$/.test(id)) throw new Error('Invalid package identifier.');
   return encoder.encode(`drive.miszori.dev:admin-name:v1:${id}`);

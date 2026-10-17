@@ -17,25 +17,17 @@
     <section id="login-panel" class="login-panel panel" aria-labelledby="login-title">
       <h1 id="login-title">Admin sign in</h1>
       <form id="login-form">
-        <label for="username">Username</label><input id="username" name="username" autocomplete="username" required maxlength="512">
-        <label for="password">Password</label><input id="password" name="password" type="password" autocomplete="current-password" required maxlength="4096">
-        <button id="login-button" class="button primary full-width" type="submit">Sign in</button>
+        <label for="username">Username</label><input id="username" name="username" autocomplete="username" readonly>
+        <div id="setup-fields" hidden><label for="setup-token">One-time setup token</label><input id="setup-token" type="password" autocomplete="off" spellcheck="false"><p class="fine-print">Choose a password different from this token: the server knows the setup token.</p></div>
+        <label for="password">Password</label><input id="password" name="password" type="password" autocomplete="current-password" required>
+        <div id="confirm-field" hidden><label for="confirm-password">Confirm password</label><input id="confirm-password" type="password" autocomplete="new-password"></div>
+        <button id="login-button" class="button primary full-width" type="submit" disabled>Sign in</button>
       </form>
       <p id="login-status" class="status-message" role="status" aria-live="polite"></p>
-      <p class="fine-print">Requires the private VPN and HTTPS. Credentials remain in this tab only.</p>
+      <p class="fine-print">Requires the private VPN and HTTPS. Use 16–1,024 Unicode characters; a strong random password is recommended. The password also encrypts private package names and is never sent to the server. Names cannot be recovered if it is lost. Credentials and name keys remain in this tab only.</p>
       <p id="crypto-warning" class="notice warning" hidden>Browser encryption is unavailable. Open the HTTPS admin address over the private VPN in a browser with Web Crypto support.</p>
     </section>
     <div id="workspace" hidden>
-      <section class="panel names-panel" aria-labelledby="names-title">
-        <div class="panel-heading"><h2 id="names-title">Private package names</h2><button id="lock-names" class="button quiet small" type="button" hidden>Lock names</button></div>
-        <p class="fine-print">Optional, admin-only encrypted labels. Use a strong random passphrase different from the admin access password, which the server knows. A lost passphrase cannot be recovered: package names become unrecoverable, but file decryption using the share link is unaffected. Names and the name key stay in this tab only; unnamed uploads need no unlock.</p>
-        <form id="names-form" autocomplete="off">
-          <label for="names-passphrase">Separate name encryption passphrase</label><input id="names-passphrase" type="password" autocomplete="off" minlength="16" maxlength="1024" spellcheck="false" autocapitalize="off">
-          <label for="names-confirm">Repeat passphrase (first use only)</label><input id="names-confirm" type="password" autocomplete="off" maxlength="1024" spellcheck="false" autocapitalize="off">
-          <button id="unlock-names" class="button primary" type="submit">Unlock names</button>
-        </form>
-        <p id="names-status" class="status-message" role="status" aria-live="polite"></p>
-      </section>
       <section class="panel composer" aria-labelledby="compose-title">
         <h1 id="compose-title">Upload files</h1>
         <div id="drop-zone" class="drop-zone">
@@ -46,8 +38,8 @@
         <div id="selection" class="selection" hidden><div class="selection-heading"><strong id="selection-summary"></strong><button id="clear-files" class="text-button" type="button">Clear</button></div><ul id="file-list" class="file-list" aria-label="Selected files"></ul></div>
         <div class="field-row"><div><label for="ttl">Expires after</label><select id="ttl"><option value="3600">1 hour</option><option value="86400" selected>24 hours</option><option value="259200">3 days</option><option value="604800">7 days</option><option value="2592000">30 days</option><option value="custom">Custom duration</option></select></div><div id="custom-ttl-field" hidden><label for="custom-ttl">Minutes (1–43,200)</label><input id="custom-ttl" type="number" min="1" max="43200" step="1" value="60"></div></div>
         <p class="fine-print">Expiry starts at package creation and includes upload time.</p>
-        <div class="field-row"><div><label for="package-name">Package name (optional, unlock names first)</label><input id="package-name" type="text" autocomplete="off" spellcheck="false" disabled><p class="fine-print">Up to 120 characters. Never included in the share link or download.</p></div></div>
-        <div class="notice warning"><p>One-time download: starting a transfer destroys the server copy, even if it fails or is cancelled. Recipients need desktop Chrome or Edge for large downloads; other browsers are limited to 128 MiB ZIP archives.</p></div>
+        <div class="field-row"><div><label for="package-name">Package name (optional)</label><input id="package-name" type="text" autocomplete="off" spellcheck="false" disabled><p class="fine-print">Up to 120 characters. Never included in the share link or download.</p></div></div>
+        <div class="notice warning"><p>One-time download: starting a transfer destroys the server copy, even if it fails or is cancelled. Large downloads require browser streaming support; without it, ZIP archives are limited to 128 MiB. Recipients must keep the download tab open.</p></div>
         <button id="upload-button" class="button primary full-width" type="button" disabled>Encrypt and create link</button>
         <div id="upload-progress" class="progress-area" hidden><div class="progress-copy"><span id="upload-stage">Preparing…</span><span id="upload-percent">0%</span></div><progress id="upload-meter" value="0" max="100" aria-label="Upload progress"></progress><button id="abort-upload" class="text-button danger" type="button">Cancel and delete upload</button></div>
         <p id="upload-status" class="status-message" role="status" aria-live="polite"></p>
@@ -63,7 +55,7 @@
       </section>
       <section class="panel audit-panel" aria-labelledby="audit-title">
         <div class="panel-heading"><h2 id="audit-title">Transfer activity</h2><button id="refresh-list" class="button quiet small" type="button">Refresh</button></div>
-        <p class="fine-print">Server logs include IP addresses, reported browser/device details, encrypted sizes, and timing. The browser / OS / device profile is passive and may be spoofed. Names are visible only after unlocking in this tab.</p>
+        <p class="fine-print">Server logs include IP addresses, reported browser/device details, encrypted sizes, and timing. The browser / OS / device profile is passive and may be spoofed. Private names are automatically decrypted in this tab after sign-in.</p>
         <p id="audit-status" class="status-message" role="status" aria-live="polite"></p>
         <div id="audit-empty" class="empty-state" hidden><p>No packages.</p></div>
         <div class="table-scroll" role="region" aria-label="Transfer activity table" tabindex="0"><table id="audit-table" hidden><caption class="sr-only">Package status, timestamps, encrypted volume, recipient access, and deletion controls</caption><thead><tr><th scope="col">Package</th><th scope="col">Status</th><th scope="col">Created / expires</th><th scope="col">Encrypted size</th><th scope="col">Opened / IP</th><th scope="col"><span class="sr-only">Actions</span></th></tr></thead><tbody id="audit-body"></tbody></table></div>

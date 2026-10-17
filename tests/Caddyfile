@@ -5,7 +5,7 @@
 
 (headers) {
 	header {
-		Content-Security-Policy "default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'self'; font-src 'self'; base-uri 'none'; frame-ancestors 'none'; form-action 'self'; object-src 'none'"
+		Content-Security-Policy "default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'self'; font-src 'self'; worker-src 'self'; frame-src 'self'; base-uri 'none'; frame-ancestors 'none'; form-action 'self'; object-src 'none'"
 		Referrer-Policy no-referrer
 		X-Content-Type-Options nosniff
 		Cache-Control no-store
@@ -24,6 +24,10 @@
 :8080 {
 	import headers
 	root * /srv
+	@empty path / /local-download/*
+	handle @empty {
+		respond "" 404
+	}
 	@private path /admin /admin/* /admin.html /admin.js /api/admin /api/admin/*
 	handle @private {
 		respond "Not found" 404
@@ -31,13 +35,13 @@
 	handle /api/* {
 		import proxy
 	}
-	@page path / /package/*
+	@page path /package/*
 	handle @page {
 		rewrite * /index.html
 		templates
 		file_server
 	}
-	@assets path /styles.css /public.js /crypto.js /zip.js /share-preview.png
+	@assets path /styles.css /public.js /crypto.js /zip.js /download.js /download-worker.js /share-preview.png
 	handle @assets {
 		file_server
 	}
@@ -49,6 +53,10 @@
 :8081 {
 	import headers
 	root * /srv
+	@empty path / /local-download/*
+	handle @empty {
+		respond "" 404
+	}
 	handle /admin/api/* {
 		uri replace /admin/api/ /api/admin/ 1
 		import proxy
@@ -60,7 +68,7 @@
 	handle /api/* {
 		import proxy
 	}
-	@page path / /admin /admin/
+	@page path /admin /admin/
 	handle @page {
 		rewrite * /admin.html
 		file_server
@@ -70,7 +78,7 @@
 		templates
 		file_server
 	}
-	@assets path /styles.css /admin.js /public.js /crypto.js /zip.js /names.js /share-preview.png
+	@assets path /styles.css /admin.js /public.js /crypto.js /zip.js /names.js /auth.js /download.js /download-worker.js /share-preview.png
 	handle @assets {
 		file_server
 	}

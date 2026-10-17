@@ -1,10 +1,11 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { randomBytes, webcrypto } from 'node:crypto';
+import { adminSession, testPassword } from './auth-helper.mjs';
 
 const pub = process.env.TEST_PUBLIC_URL || 'http://localhost:18080';
 const admin = process.env.TEST_ADMIN_URL || 'http://localhost:18081';
-const auth = { Authorization: `Basic ${Buffer.from('admin:integration-only-password-please-never-deploy').toString('base64')}` };
+const { auth, nameKey } = await adminSession(admin);
 const encode = bytes => Buffer.from(bytes).toString('base64url');
 async function api(path, method = 'GET', body, extra = {}) {
   return fetch(`${admin}/admin/api/${path}`, { method, headers: { ...auth, ...extra }, body: body === undefined ? undefined : JSON.stringify(body) });
@@ -22,12 +23,23 @@ async function encryptedName(id, text) {
   const config = await (await api('config')).json();
   assert.equal(config.labelKey.version, 1); assert.equal(config.labelKey.iterations, 600000);
   assert.equal(Buffer.from(config.labelKey.salt, 'base64url').length, 16);
-  const material = await webcrypto.subtle.importKey('raw', new TextEncoder().encode('separate-integration-label-passphrase-123'), 'PBKDF2', false, ['deriveKey']);
-  const key = await webcrypto.subtle.deriveKey({ name: 'PBKDF2', hash: 'SHA-256', salt: Buffer.from(config.labelKey.salt, 'base64url'), iterations: config.labelKey.iterations }, material, { name: 'AES-GCM', length: 256 }, false, ['encrypt', 'decrypt']);
+  const key = nameKey;
   const iv = randomBytes(12); const params = { name: 'AES-GCM', iv, additionalData: new TextEncoder().encode(`drive.miszori.dev:admin-name:v1:${id}`) };
   const ciphertext = await webcrypto.subtle.encrypt(params, key, new TextEncoder().encode(text));
   return { envelope: { version: 1, iv: encode(iv), ciphertext: encode(ciphertext) }, key, params };
 }
+
+test('enrollment is one-time and login accepts only the independently derived authentication value', async () => {
+  const discovered = await (await fetch(`${admin}/admin/api/auth`)).json();
+  assert.equal(discovered.initialized, true);
+  assert.equal(JSON.stringify(discovered).includes(testPassword), false);
+  assert.equal('verifier' in discovered, false);
+  const raw = { Authorization: `Basic ${Buffer.from(`${discovered.username}:${testPassword}`).toString('base64')}` };
+  assert.equal((await fetch(`${admin}/admin/api/config`, { headers: raw })).status, 401);
+  assert.equal((await api('config')).status, 200);
+  const repeated = await fetch(`${admin}/admin/api/setup`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ setupToken: 'not-an-enrollment-token', authentication: encode(randomBytes(32)) }) });
+  assert.equal(repeated.status, 409);
+});
 
 test('admin labels stay encrypted, private, and independent of the package payload', async () => {
   const p = await create(); const label = 'Private admin name: 秘密';
@@ -80,7 +92,10 @@ test('messaging previews are generic, server-rendered, and never claim or audit 
       assert.equal(response.status, 200); const html = await response.text();
       assert.match(html, /property="og:title" content="drive\.miszori\.dev"/);
       assert.match(html, /name="twitter:card" content="summary_large_image"/);
-      assert.ok(html.includes(`content='${pub}/share-preview.png'`));
+      assert.ok(html.includes(`content='${pub}/share-preview.png?v=2'`));
+      assert.match(html, /property="og:description" content=""/);
+      assert.match(html, /name="twitter:description" content=""/);
+      assert.equal(html.includes('Server logs include'), false);
       assert.equal(html.includes('{{env'), false, 'templates must be expanded before bots read HTML');
       assert.equal(html.includes('Do not disclose this package name'), false);
       assert.equal(html.includes(envelope.ciphertext), false);

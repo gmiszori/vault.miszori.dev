@@ -5,30 +5,30 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="referrer" content="no-referrer">
   <meta name="color-scheme" content="dark">
-  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self'; connect-src 'self'; img-src 'self'; font-src 'none'; object-src 'none'; base-uri 'none'; form-action 'none'">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self'; connect-src 'self'; img-src 'self'; font-src 'none'; worker-src 'self'; frame-src 'self'; object-src 'none'; base-uri 'none'; form-action 'none'">
   <title>drive.miszori.dev</title>
-  <meta name="description" content="Encrypted files. One-time download. Open the complete link from your sender.">
+  <meta name="description" content="">
   <meta property="og:type" content="website">
   <meta property="og:site_name" content="drive.miszori.dev">
   <meta property="og:title" content="drive.miszori.dev">
-  <meta property="og:description" content="Encrypted files. One-time download. Open the complete link from your sender.">
-  <meta property="og:image" content='{{env "PUBLIC_ORIGIN"}}/share-preview.png'>
+  <meta property="og:description" content="">
+  <meta property="og:image" content='{{env "PUBLIC_ORIGIN"}}/share-preview.png?v=2'>
   <meta property="og:image:type" content="image/png">
   <meta property="og:image:width" content="1200">
   <meta property="og:image:height" content="630">
-  <meta property="og:image:alt" content="drive.miszori.dev — one-time encrypted package">
+  <meta property="og:image:alt" content="drive.miszori.dev">
   <meta name="twitter:card" content="summary_large_image">
   <meta name="twitter:title" content="drive.miszori.dev">
-  <meta name="twitter:description" content="Encrypted files. One-time download. Open the complete link from your sender.">
-  <meta name="twitter:image" content='{{env "PUBLIC_ORIGIN"}}/share-preview.png'>
-  <meta name="twitter:image:alt" content="drive.miszori.dev — one-time encrypted package">
+  <meta name="twitter:description" content="">
+  <meta name="twitter:image" content='{{env "PUBLIC_ORIGIN"}}/share-preview.png?v=2'>
+  <meta name="twitter:image:alt" content="drive.miszori.dev">
   <link rel="stylesheet" href="/styles.css">
   <script type="module" src="/public.js"></script>
 </head>
 <body>
   <a class="skip-link" href="#main">Skip to content</a>
   <div class="public-shell">
-    <header class="site-header"><a class="brand" href="/">drive.miszori.dev</a></header>
+    <header class="site-header"><span class="brand">drive.miszori.dev</span></header>
     <main id="main" class="public-main">
       <section id="landing-card" class="transfer-card" aria-labelledby="landing-title">
         <h1 id="landing-title">Open your package link</h1>
@@ -46,7 +46,6 @@
         <button id="cancel-download" type="button" class="text-button danger" hidden>Cancel transfer (irreversible)</button>
         <p id="download-status" class="status-message" role="status" aria-live="polite"></p>
         <a id="save-archive" class="button primary full-width" hidden>Save decrypted ZIP archive</a>
-        <p class="fine-print">Server logs include IP addresses, reported browser/device details, encrypted sizes, and timing.</p>
         <noscript><p class="notice warning">JavaScript is required to decrypt this package. No files have been consumed.</p></noscript>
       </section>
     </main>

@@ -50,13 +50,15 @@ type bucket struct {
 	count int
 }
 type Server struct {
-	mu                           sync.Mutex
-	root, user, password, origin string
-	packages                     map[string]*Package
-	limits                       map[string]bucket
-	quota                        int64
-	now                          func() time.Time
-	labelKey                     LabelKey
+	mu                 sync.Mutex
+	root, user, origin string
+	auth               *authRecord
+	setupVerifier      [32]byte
+	packages           map[string]*Package
+	limits             map[string]bucket
+	quota              int64
+	now                func() time.Time
+	labelKey           LabelKey
 }
 
 func randomID() string {
@@ -121,8 +123,11 @@ func (s *Server) purge(p *Package, status string) error {
 	p.TokenHash = ""
 	return s.save(p)
 }
-func newServer(root, user, password, origin string, quota int64) (*Server, error) {
-	s := &Server{root: root, user: user, password: password, origin: origin, quota: quota, packages: map[string]*Package{}, limits: map[string]bucket{}, now: time.Now}
+func newServer(root, user, setupToken, origin string, quota int64) (*Server, error) {
+	if user == "" {
+		user = "admin"
+	}
+	s := &Server{root: root, user: user, origin: origin, quota: quota, packages: map[string]*Package{}, limits: map[string]bucket{}, now: time.Now}
 	if err := os.MkdirAll(root, 0700); err != nil {
 		return nil, err
 	}
@@ -156,6 +161,9 @@ func newServer(root, user, password, origin string, quota int64) (*Server, error
 		s.packages[p.ID] = &p
 	}
 	if err = s.initLabelKey(); err != nil {
+		return nil, err
+	}
+	if err = s.initAuth(setupToken); err != nil {
 		return nil, err
 	}
 	for _, p := range s.packages {
@@ -258,26 +266,30 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	admin := strings.HasPrefix(r.URL.Path, "/api/admin/")
 	if admin {
-		u, p, ok := r.BasicAuth()
-		uh, ph := sha256.Sum256([]byte(u)), sha256.Sum256([]byte(p))
-		wantU, wantP := sha256.Sum256([]byte(s.user)), sha256.Sum256([]byte(s.password))
-		if !ok || subtle.ConstantTimeCompare(uh[:], wantU[:])&subtle.ConstantTimeCompare(ph[:], wantP[:]) != 1 {
-			if !s.allowed("auth:"+peerIP(r), 20) {
-				fail(w, 429, "Too many attempts")
-				return
-			}
-			fail(w, 401, "Authentication required")
+		if !sameOrigin(r) {
+			s.authFailure(w, r, 403, "Cross-origin request denied")
 			return
 		}
-		if r.Header.Get("Origin") != "" {
-			origin := r.Header.Get("Origin")
-			if origin != "http://"+r.Host && origin != "https://"+r.Host {
-				fail(w, 403, "Cross-origin request denied")
+		if r.URL.Path == "/api/admin/auth" && r.Method == http.MethodGet {
+			if !s.allowed("discovery:"+peerIP(r), 20) {
+				fail(w, 429, "Too many requests")
 				return
 			}
+			s.mu.Lock()
+			writeJSON(w, 200, map[string]any{"initialized": s.auth != nil, "username": s.user, "labelKey": s.labelKey, "publicOrigin": s.origin})
+			s.mu.Unlock()
+			return
 		}
-		if r.Header.Get("Sec-Fetch-Site") == "cross-site" {
-			fail(w, 403, "Cross-origin request denied")
+		if s.authThrottled(r) {
+			fail(w, 429, "Too many attempts")
+			return
+		}
+		if r.URL.Path == "/api/admin/setup" && r.Method == http.MethodPost {
+			s.setup(w, r)
+			return
+		}
+		if !s.authenticated(r) {
+			s.authFailure(w, r, 401, "Authentication required")
 			return
 		}
 		s.admin(w, r)
@@ -549,16 +561,12 @@ func env(key, def string) string {
 	return def
 }
 func main() {
-	password := os.Getenv("ADMIN_PASSWORD")
-	if len(password) < 16 {
-		log.Fatal("ADMIN_PASSWORD must be at least 16 characters")
-	}
 	origin := env("PUBLIC_ORIGIN", "https://drive.miszori.dev")
 	quota, err := strconv.ParseInt(env("MAX_STORAGE_BYTES", "107374182400"), 10, 64)
 	if err != nil || quota < maxChunk {
 		log.Fatal("Invalid MAX_STORAGE_BYTES")
 	}
-	s, err := newServer(env("DATA_DIR", "/data"), env("ADMIN_USER", "admin"), password, origin, quota)
+	s, err := newServer(env("DATA_DIR", "/data"), env("ADMIN_USER", "admin"), os.Getenv("ADMIN_SETUP_TOKEN"), origin, quota)
 	if err != nil {
 		log.Fatal("Cannot initialize storage: ", err)
 	}

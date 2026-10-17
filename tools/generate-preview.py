@@ -18,7 +18,5 @@ image = Image.new("RGB", (1200, 630), "#000000")
 draw = ImageDraw.Draw(image)
 blue = "#3b82f6"
 draw.line([(80, 200), (80, 124), (120, 124), (138, 142), (194, 142), (194, 200), (80, 200)], fill=blue, width=7, joint="curve")
-draw.text((76, 270), "drive.miszori.dev", font=font(84, bold=True), fill="#ffffff")
-draw.text((80, 390), "One-time encrypted package", font=font(38), fill="#a1a1aa")
-draw.line([(80, 528), (1120, 528)], fill="#27272a", width=2)
+draw.text((76, 280), "drive.miszori.dev", font=font(84, bold=True), fill="#ffffff")
 image.save(Path(__file__).resolve().parents[1] / "web" / "share-preview.png", optimize=True)

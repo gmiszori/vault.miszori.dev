@@ -158,7 +158,7 @@ func TestBrowserClaimOnlyAndAtomicPersistence(t *testing.T) {
 	if !bytes.Contains(list.Body.Bytes(), []byte("openedBrowser")) || bytes.Contains(list.Body.Bytes(), []byte("<script>")) {
 		t.Fatal("admin profile absent or unescaped")
 	}
-	restarted, err := newServer(s.root, s.user, s.password, s.origin, s.quota)
+	restarted, err := newServer(s.root, s.user, "", s.origin, s.quota)
 	if err != nil || restarted.packages[id].OpenedBrowser == nil || *restarted.packages[id].OpenedBrowser != before {
 		t.Fatal("browser did not survive restart", err)
 	}

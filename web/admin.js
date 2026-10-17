@@ -1,94 +1,78 @@
 import { CHUNK_SIZE, MAX_BYTES, MAX_FILES, encodeKey, importKey, encryptChunk, serializeManifest, formatBytes } from './crypto.js';
 
-import { validateLabelKey, validateName, deriveNameKey, encryptName, decryptName } from './names.js';
+import { validateLabelKey, validateName, encryptName, decryptName } from './names.js';
+import { validateAuthConfig, deriveAdminKeys, adminAuthorization } from './auth.js';
 
 const $ = id => document.getElementById(id);
-let labelConfig;
+let authConfig;
+let authLoading = false;
 let nameKey = null;
 let nameEpoch = 0;
 let auditPackages = [];
 let renameTarget = null;
+let renameAttempt = 0;
 
 function closeNameDialog() {
+  ++renameAttempt;
   renameTarget = null;
+  $('save-name').disabled = false;
   $('rename-name').value = '';
   message('rename-status', '');
   if ($('name-dialog').open) $('name-dialog').close();
 }
 
-function lockNames() {
-  ++nameEpoch;
-  nameKey = null;
-  $('names-passphrase').value = '';
-  $('names-confirm').value = '';
-  $('package-name').value = '';
-  $('package-name').disabled = true;
-  $('names-form').hidden = false;
-  $('unlock-names').disabled = false;
-  $('lock-names').hidden = true;
-  closeNameDialog();
+function scrubNames() {
   for (const row of $('audit-body').children) {
     const label = row.children[0]?.children[0];
-    if (label) label.textContent = 'Locked name';
+    if (label) label.textContent = 'Name unavailable';
   }
-  message('names-status', 'Names locked.');
-  void renderList();
 }
 
-function reusesAdminPassword(passphrase) {
-  const credentials = Uint8Array.from(atob(authorization.slice(6)), char => char.charCodeAt(0));
-  try {
-    const decoded = new TextDecoder('utf-8', { fatal: true }).decode(credentials);
-    return passphrase === decoded.slice(decoded.indexOf(':') + 1);
-  } finally { credentials.fill(0); }
+function clearNames() {
+  ++nameEpoch;
+  nameKey = null;
+  auditPackages = [];
+  $('package-name').value = '';
+  $('package-name').disabled = true;
+  closeNameDialog();
+  scrubNames();
+  $('audit-body').replaceChildren();
 }
 
-async function unlockNames(event) {
-  event.preventDefault();
-  if (!authorization || nameKey || $('unlock-names').disabled) return;
-  const epoch = ++nameEpoch;
-  const session = loginAttempt;
-  $('unlock-names').disabled = true;
-  message('names-status', 'Unlocking names…');
-  try {
-    const reused = reusesAdminPassword($('names-passphrase').value);
-    const keyPromise = reused ? null : deriveNameKey($('names-passphrase').value, labelConfig);
-    const matches = $('names-passphrase').value === $('names-confirm').value;
-    $('names-passphrase').value = '';
-    $('names-confirm').value = '';
-    if (reused) throw new Error('Use a strong, different name passphrase, not the admin access password known to the server.');
-    const candidate = await keyPromise;
-    if (epoch !== nameEpoch || session !== loginAttempt || !authorization) return;
-    const data = await (await api('/packages')).json();
-    if (epoch !== nameEpoch || session !== loginAttempt || !authorization) return;
-    if (!Array.isArray(data.packages)) throw new Error('Could not verify existing names.');
-    const existing = data.packages.find(item => item.encryptedName);
-    if (existing) {
-      try { await decryptName(candidate, existing.id, existing.encryptedName); }
-      catch { throw new Error('Passphrase could not unlock the existing names. No names were changed.'); }
-    } else if (!matches) throw new Error('First use: enter the same new passphrase twice.');
-    if (epoch !== nameEpoch || session !== loginAttempt || !authorization) return;
-    nameKey = candidate;
-    auditPackages = data.packages;
-    $('names-form').hidden = true;
-    $('lock-names').hidden = false;
-    $('package-name').disabled = uploading;
-    message('names-status', 'Names unlocked in this tab only.');
-    await renderList();
-  } catch (error) {
-    if (epoch === nameEpoch && session === loginAttempt) message('names-status', error.message || 'Names could not be unlocked.', true);
-  } finally {
-    if (epoch === nameEpoch) $('unlock-names').disabled = false;
-  }
+function clearSession(status = '') {
+  ++loginAttempt;
+  authorization = '';
+  publicOrigin = '';
+  clearNames();
+  uploadController?.abort();
+  uploadController = null;
+  currentPackage = null;
+  selected = [];
+  listing = false;
+  pendingDelete = null;
+  if ($('delete-dialog').open) $('delete-dialog').close();
+  $('delete-description').textContent = '';
+  $('password').value = '';
+  $('confirm-password').value = '';
+  $('setup-token').value = '';
+  forgetLink();
+  setBusy(false);
+  $('audit-status').textContent = '';
+  $('workspace').hidden = true;
+  $('logout').hidden = true;
+  $('login-panel').hidden = false;
+  $('login-button').disabled = authLoading || !authConfig || !window.isSecureContext || !crypto.subtle;
+  message('login-status', status);
+  message('upload-status', '');
 }
 
 async function savePackageName(id, value, signal) {
   const epoch = nameEpoch;
   const session = loginAttempt;
-  if (!nameKey) throw new Error('Unlock names before naming a package.');
+  if (!nameKey) throw new Error('Sign in before naming a package.');
   const name = validateName(value);
   const encryptedName = name ? await encryptName(nameKey, id, name) : null;
-  if (epoch !== nameEpoch || session !== loginAttempt || !nameKey) throw new Error('Names were locked. Name was not saved.');
+  if (epoch !== nameEpoch || session !== loginAttempt || !nameKey) throw new Error('Session ended. Name was not saved.');
   signal?.throwIfAborted();
   await api(`/packages/${encodeURIComponent(id)}`, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ encryptedName }), signal });
 }
@@ -108,6 +92,8 @@ function message(id, text, error = false) {
 }
 
 async function api(path, options = {}) {
+  if (!authorization) throw new Error('Sign in to continue.');
+  const session = loginAttempt;
   const response = await fetch(`/admin/api${path}`, {
     ...options,
     headers: { ...options.headers, Authorization: authorization },
@@ -117,13 +103,14 @@ async function api(path, options = {}) {
   if (!response.ok) {
     await response.body?.cancel();
     const errors = {
-      401: 'Sign-in failed or credentials are no longer valid. Sign out and sign in again.',
+      401: 'Sign-in failed or credentials are no longer valid. Sign in again.',
       403: 'Access denied. Connect to the private VPN and check your credentials.',
       404: 'This package no longer exists.',
       409: 'Package state changed, or this record already exists. Uploads cannot be retried.',
       413: 'The server rejected the package size.',
       429: 'Too many requests. Please wait before trying again.'
     };
+    if (response.status === 401 && session === loginAttempt) clearSession(errors[401]);
     throw new Error(errors[response.status] || `The server could not complete the request (HTTP ${response.status}).`);
   }
   return response;
@@ -135,32 +122,97 @@ function forgetLink() {
   message('copy-status', '');
 }
 
+function showLoginMode() {
+  const setup = !authConfig.initialized;
+  $('username').value = authConfig.username;
+  $('setup-fields').hidden = !setup;
+  $('setup-token').required = setup;
+  $('confirm-field').hidden = !setup;
+  $('confirm-password').required = setup;
+  $('password').setAttribute('autocomplete', setup ? 'new-password' : 'current-password');
+  $('login-title').textContent = setup ? 'Set admin password' : 'Admin sign in';
+  $('login-button').textContent = setup ? 'Set password and sign in' : 'Sign in';
+}
+
+async function loadAuth() {
+  if (authLoading) return;
+  authLoading = true;
+  const session = loginAttempt;
+  $('login-button').disabled = true;
+  message('login-status', 'Loading sign-in settings…');
+  try {
+    const response = await fetch('/admin/api/auth', { credentials: 'omit', cache: 'no-store', redirect: 'error', referrerPolicy: 'no-referrer', signal: AbortSignal.timeout(30000) });
+    if (!response.ok) { await response.body?.cancel(); throw new Error('Could not load sign-in settings. Check the VPN and reload this page.'); }
+    const config = validateAuthConfig(await response.json());
+    if (session !== loginAttempt) return;
+    authConfig = config;
+    showLoginMode();
+    message('login-status', '');
+  } catch (error) {
+    if (session === loginAttempt) message('login-status', error.message || 'Could not load sign-in settings. Reload to try again.', true);
+  } finally {
+    authLoading = false;
+    $('login-button').disabled = !authConfig || !window.isSecureContext || !crypto.subtle;
+  }
+}
+
+function readLoginKeys() {
+  const matches = $('password').value === $('confirm-password').value;
+  const setupToken = $('setup-token').value;
+  $('setup-token').value = '';
+  try {
+    if (!authConfig.initialized && !setupToken) throw new Error('Enter the one-time setup token.');
+    if (!authConfig.initialized && $('password').value === setupToken) throw new Error('Use a password different from the setup token, which is known to the server.');
+    if (!authConfig.initialized && !matches) throw new Error('Passwords must match.');
+    return { setupToken, keys: deriveAdminKeys($('password').value, authConfig.labelKey) };
+  } finally {
+    $('password').value = '';
+    $('confirm-password').value = '';
+  }
+}
+
 async function login(event) {
   event.preventDefault();
-  if (!window.isSecureContext || !crypto.subtle) return;
+  if (!window.isSecureContext || !crypto.subtle || !authConfig || authLoading || $('login-button').disabled || authorization) return;
   const attempt = ++loginAttempt;
-  const username = $('username').value;
-  const password = $('password').value;
-  if (username.includes(':')) {
-    message('login-status', 'A Basic Auth username cannot contain a colon.', true);
-    return;
-  }
   $('login-button').disabled = true;
-  message('login-status', 'Signing in…');
-  const raw = new TextEncoder().encode(`${username}:${password}`);
-  authorization = `Basic ${btoa(String.fromCharCode(...raw))}`;
-  raw.fill(0);
-  $('password').value = '';
+  message('login-status', authConfig.initialized ? 'Signing in…' : 'Setting admin password…');
+  let setupToken = '';
+  let keys;
   try {
+    let keysPromise;
+    ({ setupToken, keys: keysPromise } = readLoginKeys());
+    keys = await keysPromise;
+    keysPromise = null;
+    if (attempt !== loginAttempt) return;
+    if (!authConfig.initialized) {
+      const body = JSON.stringify({ setupToken, authentication: keys.authentication });
+      setupToken = '';
+      const response = await fetch('/admin/api/setup', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body, credentials: 'omit', cache: 'no-store', redirect: 'error', referrerPolicy: 'no-referrer', signal: AbortSignal.timeout(30000) });
+      if (attempt !== loginAttempt) { await response.body?.cancel(); return; }
+      if (response.status !== 204) {
+        await response.body?.cancel();
+        if (response.status === 409) { authConfig.initialized = true; showLoginMode(); }
+        throw new Error(response.status === 403 ? 'Setup token was not accepted.' : 'Setup could not be confirmed. Reload sign-in settings before trying again.');
+      }
+      authConfig.initialized = true;
+      showLoginMode();
+    }
+    authorization = adminAuthorization(authConfig.username, keys.authentication);
+    keys.authentication = '';
     const config = await (await api('/config')).json();
+    if (attempt !== loginAttempt) return;
     const origin = new URL(config.publicOrigin);
     const loopbackHosts = new Set(['localhost', '127.0.0.1', '[::1]']);
     const loopback = origin.protocol === 'http:' && loopbackHosts.has(origin.hostname) && loopbackHosts.has(location.hostname) && window.isSecureContext;
     if ((origin.protocol !== 'https:' && !loopback) || origin.username || origin.password || origin.pathname !== '/' || origin.search || origin.hash) throw new Error('The server must provide a valid HTTPS public origin (HTTP is allowed only on localhost for development).');
-    if (attempt !== loginAttempt) return;
-    labelConfig = validateLabelKey(config.labelKey);
+    const labelKey = validateLabelKey(config.labelKey);
+    if (labelKey.salt !== authConfig.labelKey.salt) throw new Error('Encryption settings changed. Reload before signing in.');
+    nameKey = keys.nameKey;
+    keys.nameKey = null;
+    ++nameEpoch;
     publicOrigin = origin.origin;
-    $('username').value = '';
+    $('package-name').disabled = false;
     $('login-panel').hidden = true;
     $('workspace').hidden = false;
     $('logout').hidden = false;
@@ -170,10 +222,12 @@ async function login(event) {
     await refreshList();
   } catch (error) {
     if (attempt !== loginAttempt) return;
-    authorization = '';
+    clearSession();
     message('login-status', error.message || 'Could not connect. Check the VPN and try again.', true);
   } finally {
-    $('login-button').disabled = !crypto.subtle;
+    setupToken = '';
+    if (keys) { keys.authentication = ''; keys.nameKey = null; }
+    if (attempt === loginAttempt) $('login-button').disabled = !authConfig || !window.isSecureContext || !crypto.subtle;
   }
 }
 
@@ -257,6 +311,7 @@ async function upload() {
   uploadController = new AbortController();
   const signal = uploadController.signal;
   const uploadNameEpoch = nameEpoch;
+  const session = loginAttempt;
   const naming = !!nameKey && !!validateName($('package-name').value);
   currentPackage = null;
   const rawKey = crypto.getRandomValues(new Uint8Array(32));
@@ -269,13 +324,14 @@ async function upload() {
     signal.throwIfAborted();
     // Let creation return its ID even if cancellation is requested, so cleanup can delete it.
     const created = await (await api('/packages', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ ttlSeconds }) })).json();
+    if (session !== loginAttempt) return;
     if (typeof created.id !== 'string' || !/^[A-Za-z0-9_-]{1,128}$/.test(created.id)) throw new Error('The server returned an invalid package identifier. Check Transfer activity for an incomplete package.');
     currentPackage = created.id;
     if (typeof created.uploadToken !== 'string' || !created.uploadToken || !Number.isFinite(Date.parse(created.expiresAt))) throw new Error('The server returned an invalid upload session.');
     uploadToken = created.uploadToken;
     signal.throwIfAborted();
     if (naming) {
-      if (uploadNameEpoch !== nameEpoch || !nameKey) throw new Error('Names were locked before the package name was saved.');
+      if (uploadNameEpoch !== nameEpoch || !nameKey) throw new Error('Session ended before the package name was saved.');
       await savePackageName(currentPackage, $('package-name').value, signal);
       $('package-name').value = '';
       signal.throwIfAborted();
@@ -289,6 +345,7 @@ async function upload() {
       await api(`/packages/${encodeURIComponent(currentPackage)}/chunks/${index}`, {
         method: 'PUT', headers: { 'Content-Type': 'application/octet-stream', 'X-Upload-Token': uploadToken }, body: ciphertext, signal
       });
+      signal.throwIfAborted();
       index++;
       uploadProgress(index, validated.chunks, `Encrypted ${formatBytes(sentBytes)} of ${formatBytes(validated.bytes)} · ${index.toLocaleString()} / ${validated.chunks.toLocaleString()} records`);
     };
@@ -317,6 +374,7 @@ async function upload() {
     completed = true;
     $('copy-link').focus();
   } catch (error) {
+    if (session !== loginAttempt) return;
     let cleanup = '';
     if (currentPackage) {
       $('upload-stage').textContent = 'Deleting incomplete package…';
@@ -333,6 +391,7 @@ async function upload() {
   } finally {
     rawKey.fill(0);
     uploadToken = '';
+    if (session !== loginAttempt) return;
     currentPackage = null;
     uploadController = null;
     setBusy(false);
@@ -363,7 +422,7 @@ function cell(row, primary, secondary) {
 
 async function refreshList() {
   if (!authorization || listing) return;
-  listing = true;
+  listing = loginAttempt;
   $('refresh-list').disabled = true;
   message('audit-status', 'Loading transfer activity…');
   const sessionAuth = authorization;
@@ -377,8 +436,7 @@ async function refreshList() {
   } catch (error) {
     if (sessionAuth === authorization && session === loginAttempt) message('audit-status', `${error.message || 'Activity could not be loaded.'} Displayed data may be out of date.`, true);
   } finally {
-    listing = false;
-    $('refresh-list').disabled = false;
+    if (session === loginAttempt) { listing = false; $('refresh-list').disabled = false; }
   }
 }
 
@@ -392,7 +450,8 @@ function packageActions(item, knownStatus, epoch) {
     button.textContent = 'Delete';
     button.setAttribute('aria-label', `Delete package ${item.id}`);
     button.addEventListener('click', () => {
-      pendingDelete = { id: item.id, button };
+      if (!authorization || epoch !== nameEpoch) return;
+      pendingDelete = { id: item.id, button, session: loginAttempt };
       $('delete-description').textContent = `Package ${item.id}`;
       $('delete-dialog').returnValue = '';
       $('delete-dialog').showModal();
@@ -407,7 +466,9 @@ function packageActions(item, knownStatus, epoch) {
     button.setAttribute('aria-label', `Name package ${id}`);
     button.addEventListener('click', () => {
       if (!nameKey || epoch !== nameEpoch) return;
+      ++renameAttempt;
       renameTarget = id;
+      $('save-name').disabled = false;
       $('rename-name').value = '';
       message('rename-status', 'Enter a new name, or leave empty to remove it.');
       $('name-dialog').showModal();
@@ -430,7 +491,7 @@ async function renderList() {
     const id = String(item.id);
     let label = id.length > 12 ? `${id.slice(0, 12)}…` : id;
     if (item.encryptedName) {
-      label = 'Locked name';
+      label = 'Name unavailable';
       if (nameKey) {
         try { label = await decryptName(nameKey, id, item.encryptedName); }
         catch { ++unreadable; }
@@ -461,67 +522,55 @@ async function renderList() {
     fragment.append(row);
   }
   if (epoch !== nameEpoch || session !== loginAttempt) return;
+  scrubNames();
   $('audit-body').replaceChildren(fragment);
   $('audit-table').hidden = !packages.length;
   $('audit-empty').hidden = !!packages.length;
   message('audit-status', `${packages.length.toLocaleString()} ${packages.length === 1 ? 'transfer' : 'transfers'} · Updated ${new Date().toLocaleTimeString()}`);
-  if (unreadable) message('names-status', `${unreadable} historic name(s) could not be decrypted and remain locked. They were not changed.`, true);
+  if (unreadable) message('audit-status', `${packages.length} transfers · ${unreadable} name(s) unavailable. Rename to replace them; existing names were not changed.`, true);
 }
 
 $('delete-dialog').addEventListener('close', async () => {
   const target = pendingDelete;
   pendingDelete = null;
-  if ($('delete-dialog').returnValue !== 'confirm' || !target) return;
+  if ($('delete-dialog').returnValue !== 'confirm' || !target || target.session !== loginAttempt) return;
   target.button.disabled = true;
   message('audit-status', 'Deleting package…');
   try {
     await api(`/packages/${encodeURIComponent(target.id)}`, { method: 'DELETE' });
+    if (target.session !== loginAttempt) return;
     if ($('share-link').value.startsWith(`${publicOrigin}/package/${target.id}#`)) forgetLink();
     await refreshList();
   } catch (error) {
+    if (target.session !== loginAttempt) return;
     message('audit-status', `${error.message} Deletion could not be confirmed. Refresh before retrying.`, true);
     target.button.disabled = false;
   }
 });
 
-$('names-form').addEventListener('submit', unlockNames);
-$('lock-names').addEventListener('click', lockNames);
 $('cancel-name').addEventListener('click', closeNameDialog);
-$('name-dialog').addEventListener('close', () => { renameTarget = null; $('rename-name').value = ''; });
+$('name-dialog').addEventListener('close', () => { ++renameAttempt; renameTarget = null; $('rename-name').value = ''; });
 $('rename-form').addEventListener('submit', async event => {
   event.preventDefault();
-  if (!renameTarget || !nameKey) return;
+  if (!renameTarget || !nameKey || $('save-name').disabled) return;
   const epoch = nameEpoch;
+  const attempt = ++renameAttempt;
   $('save-name').disabled = true;
   try {
     await savePackageName(renameTarget, $('rename-name').value);
-    if (epoch !== nameEpoch) return;
+    if (epoch !== nameEpoch || attempt !== renameAttempt) return;
     closeNameDialog();
     await refreshList();
   } catch (error) {
-    if (epoch === nameEpoch) message('rename-status', error.message || 'Name could not be saved.', true);
-  } finally { $('save-name').disabled = false; }
+    if (epoch === nameEpoch && attempt === renameAttempt) message('rename-status', error.message || 'Name could not be saved.', true);
+  } finally { if (epoch === nameEpoch && attempt === renameAttempt) $('save-name').disabled = false; }
 });
 
 $('login-form').addEventListener('submit', login);
 $('logout').addEventListener('click', () => {
   if (uploading) return;
-  ++loginAttempt;
-  auditPackages = [];
-  lockNames();
-  labelConfig = undefined;
-  authorization = '';
-  publicOrigin = '';
-  selected = [];
-  forgetLink();
-  selectionView();
-  $('audit-body').replaceChildren();
-  $('login-panel').hidden = false;
-  $('workspace').hidden = true;
-  $('logout').hidden = true;
-  $('username').focus();
-  message('login-status', 'Signed out. Credentials and the share link were forgotten.');
-  message('upload-status', '');
+  clearSession('Signed out. Credentials, names, and the share link were forgotten.');
+  $('password').focus();
 });
 for (const id of ['file-input', 'folder-input']) $(id).addEventListener('change', event => {
   addFiles(Array.from(event.target.files));
@@ -570,22 +619,10 @@ window.addEventListener('drop', event => event.preventDefault());
 window.addEventListener('beforeunload', event => {
   if (uploading || !$('result-panel').hidden) { event.preventDefault(); event.returnValue = ''; }
 });
-window.addEventListener('pagehide', () => {
-  ++loginAttempt;
-  auditPackages = [];
-  lockNames();
-  labelConfig = undefined;
-  uploadController?.abort();
-  authorization = '';
-  publicOrigin = '';
-  selected = [];
-  forgetLink();
-  $('audit-body').replaceChildren();
-  $('workspace').hidden = true;
-  $('logout').hidden = true;
-  $('login-panel').hidden = false;
-});
+window.addEventListener('pagehide', () => clearSession());
 if (!window.isSecureContext || !crypto.subtle) {
   $('crypto-warning').hidden = false;
   $('login-button').disabled = true;
+} else {
+  void loadAuth();
 }

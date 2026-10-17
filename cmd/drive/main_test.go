@@ -17,9 +17,12 @@ import (
 
 func testServer(t *testing.T) *Server {
 	t.Helper()
-	s, e := newServer(t.TempDir(), "admin", "long-test-password-123", "https://drive.example", 100*1024*1024)
+	s, e := newServer(t.TempDir(), "admin", testSetupToken, "https://drive.example", 100*1024*1024)
 	if e != nil {
 		t.Fatal(e)
+	}
+	if w := request(s, "POST", "/api/admin/setup", setupBody(testSetupToken, testAuthentication), false, ""); w.Code != 204 {
+		t.Fatalf("setup: %d %s", w.Code, w.Body)
 	}
 	return s
 }
@@ -27,7 +30,7 @@ func request(s *Server, method, path string, body []byte, auth bool, token strin
 	r := httptest.NewRequest(method, path, bytes.NewReader(body))
 	r.RemoteAddr = "192.0.2.55:1234"
 	if auth {
-		r.SetBasicAuth("admin", "long-test-password-123")
+		r.SetBasicAuth("admin", testAuthentication)
 	}
 	if token != "" {
 		r.Header.Set("X-Upload-Token", token)
@@ -143,7 +146,7 @@ func TestExpiryAndRecovery(t *testing.T) {
 	if e := s.save(s.packages[id2]); e != nil {
 		t.Fatal(e)
 	}
-	s2, e := newServer(s.root, s.user, s.password, s.origin, s.quota)
+	s2, e := newServer(s.root, s.user, "", s.origin, s.quota)
 	if e != nil {
 		t.Fatal(e)
 	}
@@ -185,7 +188,7 @@ func TestAuthAndCSRF(t *testing.T) {
 		t.Fatal("unauthorized admin")
 	}
 	r := httptest.NewRequest("POST", "/api/admin/packages", strings.NewReader(`{"ttlSeconds":3600}`))
-	r.SetBasicAuth(s.user, s.password)
+	r.SetBasicAuth(s.user, testAuthentication)
 	r.Header.Set("Origin", "https://evil.example")
 	w := httptest.NewRecorder()
 	s.ServeHTTP(w, r)
@@ -228,7 +231,7 @@ func TestRestartPreservesReadyDropsUnfinished(t *testing.T) {
 	if w := request(s, "PUT", "/api/admin/packages/"+unfinished+"/chunks/0", bytes.Repeat([]byte{1}, 32), true, token); w.Code != 204 {
 		t.Fatal(w.Code)
 	}
-	restarted, err := newServer(s.root, s.user, s.password, s.origin, s.quota)
+	restarted, err := newServer(s.root, s.user, "", s.origin, s.quota)
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -44,16 +44,15 @@ label:not(.check-row):not(.file-picker) { display: block; margin-bottom: 6px; fo
 .skip-link { position: fixed; left: 16px; top: -100px; padding: 10px 16px; background: var(--blue); color: var(--text); z-index: 20; border-radius: 6px; }
 .skip-link:focus { top: 12px; }
 .brand { color: var(--text); font-size: 20px; font-weight: 650; text-decoration: none; overflow-wrap: anywhere; }
-.site-header, .admin-header { display: flex; align-items: center; justify-content: space-between; gap: 16px; min-height: 84px; padding: 20px 0; border-bottom: 1px solid var(--line); }
-.public-shell { max-width: 680px; margin: auto; padding: 0 24px 40px; }
+.site-header, .admin-header { display: flex; align-items: center; justify-content: space-between; gap: 16px; min-height: 84px; padding: 20px 0; }
+.public-shell { max-width: 1280px; margin: auto; padding: 0 24px 40px; }
 .public-main { padding-top: 32px; }
-.admin-header, .admin-main { max-width: 960px; margin: auto; }
-.admin-body { padding: 0 24px 40px; }
+.admin-header, .admin-main { width: 100%; margin: auto; }
+.admin-body { max-width: 1280px; margin: auto; padding: 0 24px 40px; }
 .admin-main { padding-top: 32px; }
-.login-panel { max-width: 420px; margin: 0 auto; }
+.login-panel, .composer, .result-panel, .audit-panel { width: 100%; }
 #login-form input { margin-bottom: 18px; }
 #workspace { display: flex; flex-direction: column; gap: 24px; }
-.composer, .result-panel { width: 100%; max-width: 680px; margin: 0 auto; }
 .panel, .transfer-card { min-width: 0; padding: 24px; background: var(--surface); border: 1px solid var(--line); border-radius: 10px; }
 .panel-heading, .selection-heading { display: flex; align-items: center; justify-content: space-between; gap: 16px; flex-wrap: wrap; margin-bottom: 16px; }
 .panel-heading h1, .panel-heading h2 { margin-bottom: 0; }
@@ -65,10 +64,7 @@ label:not(.check-row):not(.file-picker) { display: block; margin-bottom: 6px; fo
 .button.quiet:hover:not(:disabled) { background: var(--input); border-color: var(--focus); }
 .button.destructive { color: #fff; background: var(--blue); }
 .button.destructive:hover:not(:disabled) { background: var(--blue-hover); }
-.names-panel { width: 100%; max-width: 680px; margin: 0 auto; }
-#names-form input { margin-bottom: 12px; }
 #rename-name { margin-bottom: 16px; }
-#names-form { margin-top: 18px; }
 .error { font-weight: 600; }
 td .text-button + .text-button { margin-left: 12px; }
 .button.small { min-height: 44px; padding: 9px 13px; }

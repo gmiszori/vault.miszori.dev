@@ -7,13 +7,13 @@ import { join } from 'node:path';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { ZipWriter, archiveSize } from '../web/zip.js';
+import { adminSession } from './auth-helper.mjs';
 
 const execute = promisify(execFile);
 
 const pub = process.env.TEST_PUBLIC_URL || 'http://localhost:18080';
 const admin = process.env.TEST_ADMIN_URL || 'http://localhost:18081';
-const credentials = Buffer.from('admin:integration-only-password-please-never-deploy').toString('base64');
-const auth = { Authorization: `Basic ${credentials}` };
+const { auth } = await adminSession(admin);
 const chunkSize = 8 * 1024 * 1024;
 async function adminFetch(path, method = 'GET', body, extra = {}) {
   return fetch(`${admin}/admin/api/${path}`, { method, headers: { ...auth, ...extra }, body });
@@ -58,8 +58,19 @@ test('Caddy isolates admin routes and supplies privacy headers', async () => {
   for (const path of ['/admin', '/admin/', '/admin.html', '/admin.js', '/api/admin/packages', '/admin/api/packages', '/api/admin']) {
     const r = await fetch(pub + path, { headers: auth }); assert.equal(r.status, 404, path);
   }
-  const home = await fetch(pub); assert.equal(home.status, 200);
+  for (const origin of [pub, admin]) {
+    const root = await fetch(origin); assert.equal(root.status, 404); assert.equal(await root.text(), '');
+    const unusedStream = await fetch(`${origin}/local-download/${'0'.repeat(64)}`);
+    assert.equal(unusedStream.status, 404); assert.equal(await unusedStream.text(), '');
+  }
+  const home = await fetch(`${pub}/package/${'0'.repeat(64)}`); assert.equal(home.status, 200);
   assert.equal((await fetch(`${pub}/zip.js`)).status, 200);
+  for (const path of ['/download.js', '/download-worker.js']) {
+    assert.equal((await fetch(pub + path)).status, 200);
+    assert.equal((await fetch(admin + path)).status, 200);
+  }
+  assert.equal((await fetch(`${pub}/auth.js`)).status, 404);
+  assert.equal((await fetch(`${admin}/auth.js`)).status, 200);
   assert.equal((await fetch(`${admin}/zip.js`)).status, 200);
   assert.equal((await fetch(`${pub}/tar.js`)).status, 404);
   assert.match(home.headers.get('content-security-policy'), /frame-ancestors 'none'/);

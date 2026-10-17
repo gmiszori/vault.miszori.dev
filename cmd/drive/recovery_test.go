@@ -25,7 +25,7 @@ func TestInterruptedLabeledPackagesRetainPrivateMetadata(t *testing.T) {
 			if err := s.save(p); err != nil {
 				t.Fatal(err)
 			}
-			restarted, err := newServer(s.root, s.user, s.password, s.origin, s.quota)
+			restarted, err := newServer(s.root, s.user, "", s.origin, s.quota)
 			if err != nil {
 				t.Fatal(err)
 			}
