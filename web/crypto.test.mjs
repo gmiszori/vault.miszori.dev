@@ -28,6 +28,7 @@ test('keys are canonical 256-bit base64url values', () => {
   assert.equal(encodeKey(bytes), 'AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8');
   assert.deepEqual(decodeKey(encodeKey(bytes)), bytes);
   for (const value of ['', 'a'.repeat(42), 'a'.repeat(44), '+'.repeat(43), 'A'.repeat(42) + 'B']) assert.throws(() => decodeKey(value));
+  assert.throws(() => decodeKey(''), { message: 'This link is missing a valid decryption key.' });
 });
 
 test('AES-GCM matches an independent implementation with big-endian IV and AAD', async () => {

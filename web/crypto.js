@@ -10,7 +10,7 @@ export function encodeKey(bytes) {
 }
 
 export function decodeKey(value) {
-  if (!/^[A-Za-z0-9_-]{43}$/.test(value)) throw new Error('This link is missing a valid decryption key. Ask the sender for the complete link.');
+  if (!/^[A-Za-z0-9_-]{43}$/.test(value)) throw new Error('This link is missing a valid decryption key.');
   const bytes = Uint8Array.from(atob(value.replaceAll('-', '+').replaceAll('_', '/') + '='), c => c.charCodeAt(0));
   if (bytes.length !== 32 || encodeKey(bytes) !== value) throw new Error('The link’s decryption key is invalid.');
   return bytes;

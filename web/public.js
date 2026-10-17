@@ -26,6 +26,13 @@ function updateButton() {
   $('download-button').disabled = !available || busy || !$('download-consent').checked;
 }
 
+function packageState(label) {
+  const element = $('package-state');
+  element.textContent = label;
+  element.classList.toggle('status-ready', label === 'Ready');
+  element.classList.toggle('status-unavailable', label === 'Unavailable');
+}
+
 function progress(bytes, total) {
   const percent = total ? Math.floor(bytes / total * 100) : 100;
   $('download-meter').value = percent;
@@ -60,6 +67,7 @@ async function download() {
   if (!available || busy || !$('download-consent').checked) return;
   if (Date.now() >= expiresAt) {
     available = false;
+    packageState('Unavailable');
     updateButton();
     status('This package has expired. Ask the sender for a new link.', true);
     return;
@@ -110,6 +118,7 @@ async function download() {
       : 'Keep this tab open. Starting this transfer cannot be undone.');
     consumed = true;
     available = false;
+    packageState('Downloading');
     const response = await fetch(`/api/packages/${encodeURIComponent(id)}/consume`, {
       method: 'POST', signal: controller.signal, credentials: 'omit', cache: 'no-store', referrerPolicy: 'no-referrer'
     });
@@ -147,7 +156,7 @@ async function download() {
     await archive.close();
     progress(bytes, bytes);
     $('download-stage').textContent = 'Decrypted & saved';
-    $('package-state').textContent = 'Downloaded';
+    packageState('Downloaded');
     $('package-title').textContent = 'Package downloaded';
     $('package-description').textContent = 'Your files are in the ZIP archive. The server copy has been destroyed.';
     $('availability').textContent = 'Claimed — no longer on the server';
@@ -163,7 +172,7 @@ async function download() {
       ? `${aborted ? 'Transfer cancelled.' : error.message} This transfer cannot be resumed. Ask the sender for a new package.`
       : aborted ? 'Save cancelled. Your package has not been claimed.' : `Could not prepare a save destination. ${error.message} Your package has not been claimed.`, !aborted || consumed);
     if (consumed) {
-      $('package-state').textContent = 'Unavailable';
+      packageState('Unavailable');
       $('availability').textContent = 'Claimed or unavailable';
       $('download-stage').textContent = 'Transfer stopped — not recoverable';
       keyBytes?.fill(0);
@@ -197,7 +206,7 @@ async function initialize() {
   $('package-card').hidden = false;
   blobFallbackOffered = !supportsLocalStreaming;
   $('fallback-warning').hidden = supportsStreaming || supportsLocalStreaming;
-  $('package-state').textContent = 'Checking';
+  packageState('Checking');
   $('package-title').textContent = 'Download package';
   $('package-description').textContent = 'Checking availability. Opening this page does not start a download.';
   $('availability').textContent = 'Checking…';
@@ -223,7 +232,7 @@ async function initialize() {
     expiresAt = Date.parse(info.expiresAt);
     if (info.status !== 'ready' || !Number.isFinite(expiresAt) || expiresAt <= Date.now()) throw new Error('This package is not available. Ask the sender for a new link.');
     available = true;
-    $('package-state').textContent = 'Ready';
+    packageState('Ready');
     $('availability').textContent = `Until ${new Date(expiresAt).toLocaleString()}`;
     $('package-description').textContent = 'Ready to download. File names and sizes are encrypted until you start.';
     status('Nothing is downloaded or destroyed until you press the button.');
@@ -232,7 +241,7 @@ async function initialize() {
     fragment = '';
     keyBytes?.fill(0);
     keyBytes = null;
-    $('package-state').textContent = 'Unavailable';
+    packageState('Unavailable');
     $('package-title').textContent = 'Package unavailable';
     $('package-description').textContent = 'Checking availability does not start a download.';
     $('availability').textContent = 'Unavailable';

@@ -17,7 +17,7 @@ class Element {
     this.id = id; this.value = ''; this.hidden = false; this.checked = false;
     this.disabled = false; this.textContent = ''; this.children = []; this.listeners = new Map();
     const classes = new Set();
-    this.classList = { toggle(name, force) { if (force ?? !classes.has(name)) classes.add(name); else classes.delete(name); }, add(name) { classes.add(name); }, remove(name) { classes.delete(name); } };
+    this.classList = { toggle(name, force) { if (force ?? !classes.has(name)) classes.add(name); else classes.delete(name); }, contains(name) { return classes.has(name); }, add(name) { classes.add(name); }, remove(name) { classes.delete(name); } };
   }
   addEventListener(type, handler) { this.listeners.set(type, [...(this.listeners.get(type) || []), handler]); }
   async dispatch(type, extra = {}) { for (const handler of this.listeners.get(type) || []) await handler({ target: this, preventDefault() {}, ...extra }); }
@@ -146,6 +146,44 @@ test('public opening removes the key and only explicit consent consumes; fallbac
     assert.equal(ui.$('download-button').disabled, true);
     assert.match(ui.$('download-status').textContent, /Archive ready/);
   } finally { ui.restore(); }
+});
+
+test('missing-key and ready states have distinct colors and reset on a corrected link', async () => {
+  let requests = 0;
+  const ui = await harness('public', async () => { requests++; return ready(); });
+  try {
+    await until(() => ui.$('package-state').textContent === 'Unavailable');
+    assert.equal(ui.$('download-status').textContent, 'This link is missing a valid decryption key.');
+    assert.ok(ui.$('package-state').classList.contains('status-unavailable'));
+    assert.equal(ui.$('package-state').classList.contains('status-ready'), false);
+    assert.equal(requests, 0);
+    location.hash = `#${encodeKey(new Uint8Array(32).fill(2))}`;
+    await ui.win.dispatch('hashchange');
+    await until(() => ui.$('package-state').textContent === 'Ready');
+    assert.ok(ui.$('package-state').classList.contains('status-ready'));
+    assert.equal(ui.$('package-state').classList.contains('status-unavailable'), false);
+    assert.equal(requests, 1);
+  } finally { ui.restore(); }
+});
+
+test('expired packages lose their ready color without starting a download', async () => {
+  const expires = Date.now() + 60000;
+  let claims = 0;
+  const ui = await harness('public', async (path, options) => {
+    if (options.method === 'POST') claims++;
+    return json({ status: 'ready', expiresAt: new Date(expires).toISOString() });
+  }, { hash: `#${encodeKey(new Uint8Array(32))}` });
+  const originalNow = Date.now;
+  try {
+    await until(() => ui.$('package-state').textContent === 'Ready');
+    ui.$('download-consent').checked = true;
+    Date.now = () => expires;
+    await ui.$('download-button').dispatch('click');
+    assert.equal(ui.$('package-state').textContent, 'Unavailable');
+    assert.ok(ui.$('package-state').classList.contains('status-unavailable'));
+    assert.equal(ui.$('package-state').classList.contains('status-ready'), false);
+    assert.equal(claims, 0);
+  } finally { Date.now = originalNow; ui.restore(); }
 });
 
 test('save picker runs before consuming, and writable output is streamed without a Blob', async () => {
@@ -504,13 +542,24 @@ test('entrypoints use the exact brand, dark scheme, and task-focused copy', asyn
   const publicHTML = await readFile(new URL('./index.html', import.meta.url), 'utf8');
   assert.match(publicHTML, /Open your package link/);
   assert.match(publicHTML, /even if the download fails or is cancelled/);
+  assert.match(publicHTML, /id="download-warning" class="notice warning one-time-warning"/);
   assert.match(publicHTML, /128 MiB, including archive overhead/);
   assert.match(publicHTML, /unknown until you start and claim the one-time download/);
   assert.match(publicHTML, /desktop Chrome or Edge/);
   const adminHTML = await readFile(new URL('./admin.html', import.meta.url), 'utf8');
   assert.match(adminHTML, /Expiry starts at package creation and includes upload time/);
+  assert.match(adminHTML, /class="notice warning one-time-warning"><p>One-time download:/);
   assert.match(adminHTML, /key is not saved and cannot be recovered/);
   assert.match(adminHTML, /id="result-panel"[^>]*hidden/);
+});
+
+test('share artwork includes the generic receipt message without adding card description text', async () => {
+  const generator = await readFile(new URL('../tools/generate-preview.py', import.meta.url), 'utf8');
+  const html = await readFile(new URL('./index.html', import.meta.url), 'utf8');
+  assert.ok(generator.includes('"You have received an encrypted package."'));
+  assert.equal((html.match(/share-preview\.png\?v=3/g) || []).length, 2);
+  assert.match(html, /property="og:description" content=""/);
+  assert.match(html, /name="twitter:description" content=""/);
 });
 
 test('dark palette provides readable text, blue controls and keyboard focus', async () => {
@@ -531,7 +580,15 @@ test('dark palette provides readable text, blue controls and keyboard focus', as
   assert.match(css, /color-scheme: dark/);
   for (const name of ['background', 'surface', 'input']) assert.equal(colors[name], '#000');
   assert.equal(colors.text, '#fff');
-  for (const name of ['muted', 'line', 'warning', 'danger', 'success']) assert.match(colors[name], /^#([a-f0-9])\1{2}(?:\1{3})?$/);
+  for (const name of ['muted', 'line', 'warning']) assert.match(colors[name], /^#([a-f0-9])\1{2}(?:\1{3})?$/);
+  const channels = value => value.slice(1).match(/../g).map(channel => parseInt(channel, 16));
+  const danger = channels(colors.danger), success = channels(colors.success);
+  assert.ok(danger[0] > danger[1] && danger[0] > danger[2], 'danger is red');
+  assert.ok(success[1] > success[0] && success[1] > success[2], 'ready is green');
+  assert.match(css, /\.status-ready\s*\{[^}]*color: var\(--success\)/);
+  assert.match(css, /\.status-unavailable\s*\{[^}]*color: var\(--danger\)/);
+  assert.match(css, /\.notice\.one-time-warning\s*\{[^}]*border-color: var\(--danger\); color: var\(--danger\)/);
+  assert.match(css, /\.notice\.one-time-warning strong\s*\{[^}]*color: var\(--danger\)/);
   for (const name of ['text', 'muted', 'danger', 'warning', 'success', 'focus']) {
     assert.ok(contrast(colors[name], colors.surface) >= 4.5, `${name} has readable contrast`);
   }

@@ -12,16 +12,16 @@
   <meta property="og:site_name" content="drive.miszori.dev">
   <meta property="og:title" content="drive.miszori.dev">
   <meta property="og:description" content="">
-  <meta property="og:image" content='{{env "PUBLIC_ORIGIN"}}/share-preview.png?v=2'>
+  <meta property="og:image" content='{{env "PUBLIC_ORIGIN"}}/share-preview.png?v=3'>
   <meta property="og:image:type" content="image/png">
   <meta property="og:image:width" content="1200">
   <meta property="og:image:height" content="630">
-  <meta property="og:image:alt" content="drive.miszori.dev">
+  <meta property="og:image:alt" content="drive.miszori.dev — You have received an encrypted package.">
   <meta name="twitter:card" content="summary_large_image">
   <meta name="twitter:title" content="drive.miszori.dev">
   <meta name="twitter:description" content="">
-  <meta name="twitter:image" content='{{env "PUBLIC_ORIGIN"}}/share-preview.png?v=2'>
-  <meta name="twitter:image:alt" content="drive.miszori.dev">
+  <meta name="twitter:image" content='{{env "PUBLIC_ORIGIN"}}/share-preview.png?v=3'>
+  <meta name="twitter:image:alt" content="drive.miszori.dev — You have received an encrypted package.">
   <link rel="stylesheet" href="/styles.css">
   <script type="module" src="/public.js"></script>
 </head>
@@ -38,7 +38,7 @@
         <div class="panel-heading"><h1 id="package-title">Download package</h1><span id="package-state" class="package-state">Checking</span></div>
         <p id="package-description">Checking availability. Opening this page does not start a download.</p>
         <dl class="package-facts"><div><dt>Available</dt><dd id="availability">Checking…</dd></div><div><dt>Format</dt><dd>ZIP archive</dd></div></dl>
-        <div id="download-warning" class="notice warning"><strong>One-time download</strong><p>Starting the transfer claims and destroys the server copy, even if the download fails or is cancelled. It cannot be resumed; ask the sender for a new package.</p></div>
+        <div id="download-warning" class="notice warning one-time-warning"><strong>One-time download</strong><p>Starting the transfer claims and destroys the server copy, even if the download fails or is cancelled. It cannot be resumed; ask the sender for a new package.</p></div>
         <div id="fallback-warning" class="notice warning" hidden><strong>128 MiB browser limit</strong><p>This browser can save ZIP archives up to 128 MiB, including archive overhead. The encrypted size is unknown until you start and claim the one-time download. A larger package will be lost. For large or unknown sizes, use desktop Chrome or Edge with “Save As” support.</p></div>
         <label id="consent-label" class="check-row"><input id="download-consent" type="checkbox"><span>I understand this download cannot be repeated, even if it fails or I cancel.</span></label>
         <button id="download-button" class="button primary full-width" type="button" disabled>Download and destroy</button>

@@ -1,6 +1,6 @@
 # drive.miszori.dev
 
-Private, client-encrypted, one-time file packages. Both pages use a minimal black interface with blue accents, branded `drive.miszori.dev`. Docker runs a small Go API and Caddy; the browser encrypts/decrypts with WebCrypto. No JavaScript frameworks, third-party scripts, analytics, database service, or build step for the web pages.
+Private, client-encrypted, one-time file packages. Both pages use a minimal black interface with blue controls, green Ready states, and red Unavailable/destructive-download warnings, branded `drive.miszori.dev`. Docker runs a small Go API and Caddy; the browser encrypts/decrypts with WebCrypto. No JavaScript frameworks, third-party scripts, analytics, database service, or build step for the web pages.
 
 ## What it does
 
@@ -90,7 +90,7 @@ Browser and device details are inferred **only when a package is explicitly clai
 
 ### Messaging previews
 
-Public package HTML contains server-rendered Open Graph and Twitter-card metadata with only the generic title and a 1200×630 image. Description fields are empty, and the image contains only the folder icon/title—no subtitle or divider. A versioned image URL avoids reusing the previous artwork in newly fetched cards. Cards never include names, filenames, keys, package contents, recipient audit details, or even package-specific availability. Preview bots fetch only public HTML/image; those requests cannot consume the package. An explicit recipient download is still required.
+Public package HTML contains server-rendered Open Graph and Twitter-card metadata with only the generic title and a 1200×630 image. Description fields are empty. The image contains the folder icon/title and a generic receipt message: “You have received an encrypted package.” No divider is shown. A versioned image URL avoids reusing the previous artwork in newly fetched cards. Cards never include names, filenames, keys, package contents, recipient audit details, or even package-specific availability. Preview bots fetch only public HTML/image; those requests cannot consume the package. An explicit recipient download is still required.
 
 No canonical or `og:url` replacement is emitted, so clients can retain the **original fragment-bearing link** rather than replacing it with a URL missing the decryption key. Actual preview rendering/caching depends on the messaging app; some apps disable previews or require a new message after changes. Generic artwork may remain in third-party preview caches after package deletion.
 
