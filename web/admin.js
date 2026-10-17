@@ -1,4 +1,4 @@
-import { CHUNK_SIZE, MAX_BYTES, MAX_FILES, encodeKey, importKey, encryptChunk, serializeManifest, formatBytes } from './crypto.js';
+import { CHUNK_SIZE, MAX_BYTES, MAX_FILES, encodeKey, importKey, encryptChunk, serializeManifest, formatBytes, deriveClaimToken, claimHash } from './crypto.js';
 
 import { validateLabelKey, validateName, encryptName, decryptName } from './names.js';
 import { validateAuthConfig, deriveAdminKeys, adminAuthorization } from './auth.js';
@@ -362,8 +362,10 @@ async function upload() {
     signal.throwIfAborted();
     if (index !== validated.chunks) throw new Error('The uploaded record count is inconsistent.');
     $('upload-stage').textContent = 'Sealing package…';
+    const verifier = await claimHash(await deriveClaimToken(rawKey, currentPackage));
+    signal.throwIfAborted();
     await api(`/packages/${encodeURIComponent(currentPackage)}/finalize`, {
-      method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Upload-Token': uploadToken }, body: JSON.stringify({ chunks: index }), signal
+      method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Upload-Token': uploadToken }, body: JSON.stringify({ chunks: index, claimHash: verifier }), signal
     });
     signal.throwIfAborted();
     $('share-link').value = `${publicOrigin}/package/${currentPackage}#${encodeKey(rawKey)}`;
@@ -443,7 +445,7 @@ async function refreshList() {
 function packageActions(item, knownStatus, epoch) {
   const id = String(item.id);
   const action = document.createElement('td');
-  if (knownStatus !== 'deleted' && /^[A-Za-z0-9_-]{1,128}$/.test(item.id)) {
+  if ((knownStatus === 'uploading' || knownStatus === 'ready') && /^[A-Za-z0-9_-]{1,128}$/.test(item.id)) {
     const button = document.createElement('button');
     button.type = 'button';
     button.className = 'text-button danger';

@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { createCipheriv } from 'node:crypto';
-import { CHUNK_SIZE, MAX_CIPHERTEXT, MAX_BYTES, MAX_FILES, encodeKey, decodeKey, importKey, chunkParameters, encryptChunk, decryptChunk, validatePath, validateManifest, serializeManifest, parseManifest, FramedReader } from './crypto.js';
+import { createCipheriv, webcrypto } from 'node:crypto';
+import { CHUNK_SIZE, MAX_CIPHERTEXT, MAX_BYTES, MAX_FILES, encodeKey, decodeKey, importKey, chunkParameters, encryptChunk, decryptChunk, validatePath, validateManifest, serializeManifest, parseManifest, FramedReader, deriveClaimToken, claimHash } from './crypto.js';
 
 const entry = (path = 'folder/hello.txt', size = 10) => ({ path, size, lastModified: 1720000000123 });
 const manifest = files => ({ version: 1, files, chunkSize: CHUNK_SIZE });
@@ -29,6 +29,44 @@ test('keys are canonical 256-bit base64url values', () => {
   assert.deepEqual(decodeKey(encodeKey(bytes)), bytes);
   for (const value of ['', 'a'.repeat(42), 'a'.repeat(44), '+'.repeat(43), 'A'.repeat(42) + 'B']) assert.throws(() => decodeKey(value));
   assert.throws(() => decodeKey(''), { message: 'This link is missing a valid decryption key.' });
+});
+
+test('claim proof matches independent HKDF-SHA256 and hashes decoded secret bytes', async () => {
+  const raw = Uint8Array.from({ length: 32 }, (_, i) => i);
+  const original = raw.slice();
+  const id = 'fakepkg-123';
+  const key = await webcrypto.subtle.importKey('raw', raw, 'HKDF', false, ['deriveBits']);
+  const derive = async (salt, info) => Buffer.from(await webcrypto.subtle.deriveBits({
+    name: 'HKDF', hash: 'SHA-256', salt: new TextEncoder().encode(salt), info: new TextEncoder().encode(info)
+  }, key, 256));
+  const expected = await derive(id, 'drive.miszori.dev:package-claim:v1');
+  const token = await deriveClaimToken(raw, id);
+  assert.equal(token, expected.toString('base64url'));
+  assert.deepEqual(Buffer.from(decodeKey(token)), expected);
+  const expectedHash = Buffer.from(await webcrypto.subtle.digest('SHA-256', expected)).toString('hex');
+  assert.match(expectedHash, /^[a-f0-9]{64}$/);
+  assert.equal(await claimHash(token), expectedHash);
+  assert.notEqual(await claimHash(token), Buffer.from(await webcrypto.subtle.digest('SHA-256', new TextEncoder().encode(token))).toString('hex'));
+  assert.notEqual(token, encodeKey(raw));
+  assert.notEqual(token, await deriveClaimToken(raw, 'other-package'));
+  assert.notEqual(token, await deriveClaimToken(new Uint8Array(32).fill(9), id));
+  assert.notEqual(token, (await derive(id, 'drive.miszori.dev:admin-auth:v1')).toString('base64url'));
+  assert.notEqual(token, (await derive(id, 'drive.miszori.dev:package-claim:v2')).toString('base64url'));
+  assert.match(await deriveClaimToken(raw, 'abcdef0123456789'.repeat(4)), /^[A-Za-z0-9_-]{43}$/);
+  assert.deepEqual(raw, original, 'derivation must not destroy the still-needed file key');
+});
+
+test('claim proof rejects malformed keys, IDs, and noncanonical tokens', async () => {
+  const raw = new Uint8Array(32);
+  for (const key of [null, 'a'.repeat(32), new Uint8Array(31), new Uint8Array(33), new ArrayBuffer(32)]) {
+    await assert.rejects(deriveClaimToken(key, 'fakepkg-123'), /Invalid file key/);
+  }
+  for (const id of [null, undefined, 1, '', 'a'.repeat(129), 'a/b', '../id', 'a b', 'id\n', 'é', '\ud800']) {
+    await assert.rejects(deriveClaimToken(raw, id), /Invalid package identifier/);
+  }
+  for (const token of [null, undefined, 1, '', 'a'.repeat(42), 'a'.repeat(44), '+'.repeat(43), 'A'.repeat(42) + 'B', 'A'.repeat(43) + '=']) {
+    await assert.rejects(claimHash(token));
+  }
 });
 
 test('AES-GCM matches an independent implementation with big-endian IV and AAD', async () => {

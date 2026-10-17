@@ -60,7 +60,7 @@ Caddy obtains/renews a certificate automatically. Certificate issuance requires 
 
 Then visit `https://drive.miszori.dev/admin`. On first use, enter the setup token and choose/confirm a **different strong admin password** (16–1,024 Unicode characters). Username defaults to `admin`. The password is never sent to the server: the browser derives independent authentication and name-encryption keys. Later sign-ins use only that password and automatically unlock package names. The one-time token cannot replace or reset an enrolled password; remove `ADMIN_SETUP_TOKEN` from `.env` after enrollment if desired. Keep the data volume, including `auth.json` and `label-salt`.
 
-All sessions and name keys stay in tab memory and are cleared on sign-out/leaving. Private API requests carry a derived authentication value over HTTPS, not the password. This is deliberately a single-admin VPN application, not a public identity/MFA provider. Both public and VPN `/` return an **empty 404**; there is no landing page. Use `/admin` explicitly.
+All sessions and name keys stay in tab memory and are cleared on sign-out/leaving. Private API requests carry a derived authentication value over HTTPS, not the password. This is deliberately a single-admin VPN application, not a public identity/MFA provider. Both public and VPN `/` return **HTTP 404 with “Not found”**; there is no landing page. Use `/admin` explicitly.
 
 6. Verify **from a device outside the VPN** that `/admin`, `/admin/api/packages`, and `/api/admin/packages` return 404. Public recipients must use public DNS, not the admin's private mapping.
 
@@ -115,10 +115,10 @@ Folder selection includes files, but not empty folders. The application still ca
 3. Record 0 is an encrypted JSON manifest: `{version:1, files:[{path,size,lastModified}], chunkSize:8388608}`. Subsequent records contain each file's bytes, split at 8 MiB, in manifest order. Empty files need no data records.
 4. Every record uses **AES-256-GCM** with its 128-bit authentication tag. Its 96-bit IV is four zero bytes followed by the record index as an unsigned 64-bit big-endian integer. Unique indices under a fresh package key prevent IV reuse. Additional authenticated data is UTF-8 `packageID:recordIndex`; changing record order, package ID, key, or ciphertext fails authentication. Failed/ambiguous uploads are aborted rather than re-encrypted with a reused IV.
 5. The share link is `https://drive.miszori.dev/package/<256-bit-id>#<base64url-key>`. Browsers do not send fragments in HTTP requests. No key is sent to the API, stored in browser storage, or retained by the server.
-6. A POST claim atomically changes `ready` to `consuming` and persists the time/IP and passive browser profile before returning any content. The binary response consists of repeated **4-byte big-endian ciphertext length + ciphertext** records. Each record is unlinked before it is streamed; remaining records are removed when the handler completes or fails. A crashed `consuming` package is purged at startup before serving requests. Multiple backend replicas are **not supported**: the in-process claim lock requires exactly one API instance.
+6. A POST claim requires a separate domain-separated proof derived locally from the fragment key. The browser uses HKDF-SHA256 with the raw 32-byte file key, UTF-8 package ID as salt, and info `drive.miszori.dev:package-claim:v1`, producing a 32-byte claim token. Finalization stores only SHA-256 of its decoded bytes as `claimHash`; the public metadata endpoint does not expose it. The token is sent only as `X-Claim-Token` on a bodyless POST over HTTPS. The file key is never sent. Missing/wrong tokens, an ID alone, or the stored verifier cannot claim, audit, or delete a package. Existing packages without a verifier fail closed; recreate them rather than enabling an insecure legacy fallback. After proof and resource admission succeed, the claim atomically changes `ready` to `consuming` and persists the time/IP and passive browser profile before returning any content. The binary response consists of repeated **4-byte big-endian ciphertext length + ciphertext** records. Each record is unlinked before it is streamed; remaining records are removed when the handler completes or fails. A crashed `consuming` package is purged at startup before serving requests. Multiple backend replicas are **not supported**: the in-process claim lock requires exactly one API instance.
 7. The browser authenticates and decrypts every record and writes an uncompressed ZIP stream. CRC-32 checksums and data descriptors allow each file to be written without buffering it; ZIP64 records support sizes and offsets above 4 GiB. UTF-8 names preserve nested and Unicode paths. Only central-directory metadata is retained in memory, bounded by the manifest/file-count limits. Filename validation rejects unsafe traversal paths and duplicate names. CRC-32 is ZIP compatibility checking, not a security primitive: AES-GCM supplies authenticity. There is no trusted plaintext manifest on the server. Archive generation is entirely local, so existing encrypted packages also download as ZIP without migration.
 
-The Docker `packages` volume stores one directory per package plus the public `label-salt` KDF salt and verifier-only `auth.json` at its root. Each package's `meta.json` contains ID, state, creation/expiry/opening times, request IP, bounded reported browser/device details, an optional encrypted-name envelope, ciphertext byte/record counts, and (only during upload) the token hash. Numbered `.bin` files contain ciphertext. Temporary writes are synced and atomically renamed. Metadata is retained until 90 days after the package's expiry, then removed. It never contains readable admin package names, original filenames, file contents, or decryption keys.
+The Docker `packages` volume stores one directory per package plus the public `label-salt` KDF salt and verifier-only `auth.json` at its root. Each package's `meta.json` contains ID, state, creation/expiry/opening times, request IP, bounded reported browser/device details, an optional encrypted-name envelope, the claim verifier, ciphertext byte/record counts, and (only during upload) the upload-token hash. Numbered `.bin` files contain ciphertext. Temporary writes are synced and atomically renamed. Metadata is retained until 90 days after the package's expiry, then removed. It never contains readable admin package names, original filenames, file contents, or decryption keys.
 
 ## Privacy boundaries and operational limits
 
@@ -126,18 +126,42 @@ The Docker `packages` volume stores one directory per package plus the public `l
 
 - The server necessarily learns ciphertext size/record boundaries, upload/download timing, expiry, reported User-Agent/browser/OS/device details, and the network request IP (which may be a VPN/NAT/proxy address, not proof of a person's identity). Size patterns may reveal rough file counts and sizes. The one-time setup token exists in the initial API environment and must be protected from host/Docker administrators. The actual admin password never enters that environment or the API. Docker is isolation, not protection from a malicious host administrator.
 - HTTPS protects transport; AES-GCM protects stored content. The VPN and private route boundary protect administration. CSP, same-origin checks, no third-party resources, no caching, and login/public request throttles reduce exposure; none gives absolute security.
-- The share link itself is a bearer capability. Anyone receiving/stealing it can download first, and anyone who learns its package ID can deliberately consume ciphertext without knowing the key. GCM failure after a claim does not restore the package.
+- The complete share link is a bearer capability: anyone receiving/stealing it can derive the claim proof and download first. Knowing only the package ID, metadata, or stored claim verifier no longer authorizes destructive consumption. Brute-forcing independent 256-bit random IDs/keys is not a realistic attack, but leaked full links and denial-of-service remain risks. A validly authorized transfer that later fails GCM or saving cannot restore the package.
 - Caddy access logging is not enabled. Do not add request-body logging, analytics, external error collection, URL/key telemetry, or third-party scripts. Browser extensions, clipboard managers, messaging apps, screenshots, endpoint malware, and the recipient's saved copy are outside this application's control.
 - Deletion means unlinking live filesystem files. It is **not forensic erasure** on SSDs, snapshots, backups, RAID, or host caches. Do not back up/snapshot the package volume if destruction is required. Avoid plaintext swap/core dumps; use encrypted host disks and encrypted/disabled swap. A storage failure may prevent deletion; monitor API error logs and resolve immediately. Offline disks cannot enforce real-time expiry; startup cleanup runs before requests are accepted.
 - The recipient can retain/redistribute downloaded files. The application cannot revoke plaintext once delivered or prove a human viewed it.
 - An intentionally disconnected browser still destroys the package. Caddy/OS networking can buffer bytes; successful server delivery cannot prove successful client persistence. Do not use for irreplaceable data without a separate trusted original.
 - Slow/stalled individual request bodies and response records have a two-minute I/O deadline; the entire multi-hour package transfer has no fixed overall timeout. Resume is intentionally unsupported. Quotas limit aggregate storage, not the free space shared with other host workloads: monitor disk headroom.
 
+## Implemented hardening
+
+- **Proof before destruction:** fragment-derived claim tokens are verified before changing state, recording retrieval details, or unlinking ciphertext. ID-only and verifier-only attempts leave the package untouched. Replays cannot claim twice.
+- **Bounded load:** fixed-window global and per-IP request/failure budgets, nonblocking request/upload/download admission, and a capped backend TCP listener. Authenticated chunk uploads are deliberately not counted against the public per-minute budget, so 20 GiB uploads can finish. HTTP 429 is returned before claim mutation; the client preserves its key and can retry. Successful credentials are not rejected solely because the global failure budget is exhausted.
+- **Minimal runtime:** the API is a static Go binary in a shell-free `scratch` image, UID/GID 10001, read-only root, dropped capabilities, no-new-privileges, bounded memory/PIDs/file descriptors, and disabled core dumps. Its health check is built into `/drive healthcheck`. Caddy retains only its needed bind capability; its management API is disabled.
+- **Proxy and log controls:** header-size/header-read/idle limits, at most 64 upstream connections, and no fixed total response timeout. Caddy's default error logger removes claim/upload/authentication/cookie credentials; access logging remains disabled. Production container logs are rotated at 10 MiB × 3 per service.
+- **Supply chain:** Docker inputs are pinned by digest; official GitHub Actions are pinned to verified commit SHAs, use read-only repository permissions, and do not retain checkout credentials. CI runs `govulncheck` against both source and the exact production binary, with Go telemetry disabled. Dependabot proposes Dockerfile and GitHub Action updates; review and merge them rather than leaving pins stale. Check the Caddy Compose image digest for updates as well.
+
+| Setting | Default |
+| --- | ---: |
+| `MAX_CONCURRENT_REQUESTS` | 64 |
+| `MAX_CONCURRENT_DOWNLOADS` | 4 |
+| `MAX_CONCURRENT_UPLOADS` | 2 |
+| `MAX_BACKEND_CONNECTIONS` | 128 |
+| `PUBLIC_REQUESTS_PER_MINUTE` | 600 globally, plus 120 per IP |
+| `AUTH_FAILURES_PER_MINUTE` | 60 globally, plus 20 per IP |
+
+Limits must be positive and internally consistent: upload/download limits cannot exceed request limits, and request limits cannot exceed backend connections. These controls reduce abuse; they do not stop a network-level distributed flood. Keep health checks local and the backend network private.
+
+**Long-transfer fix:** an unconditional two-minute request-read deadline previously cancelled Go's background connection reader even for bodyless downloads. A real TCP regression reproduced truncation after the deadline, then passed after restricting read deadlines to body-bearing requests. Those requests close their backend connection after handling, so rejected/unread bodies cannot hold keep-alive sockets indefinitely. Upload-body and individual response-record I/O deadlines remain; an advancing download has no fixed total duration.
+
+**Still operator work:** obtain a genuinely independent application security review; enable MFA on the VPN/access layer; patch and firewall the host; protect Docker access; use encrypted disks and encrypted/disabled swap; and exclude package ciphertext from backups/snapshots. The repository cannot safely configure a shared host, VPN provider, or external backup system. No code or real links are submitted to an external auditor. Automated vulnerability checks are not an independent audit or proof that the application has no vulnerabilities.
+
 ## Filesystem
 
 ```text
 .
-├── .github/workflows/test.yml  Go, browser-module, Docker integration CI
+├── .github/workflows/test.yml  Go/race/vulnerability, browser and Docker CI
+├── .github/dependabot.yml  Reviewed Dockerfile/Action update proposals
 ├── .env.example          Environment template (real .env is ignored)
 ├── .gitignore            Excludes secrets and local artifacts
 ├── .dockerignore         Keeps secrets out of Docker builds
@@ -151,6 +175,9 @@ The Docker `packages` volume stores one directory per package plus the public `l
 │   ├── browser.go        Bounded passive browser/device header interpretation
 │   ├── labels.go         Persistent KDF salt and encrypted-name validation
 │   ├── auth.go           One-time enrollment and verifier-only login state
+│   ├── claims.go         Canonical claim-verifier/proof validation
+│   ├── admission.go      Global budgets, concurrency and connection caps
+│   ├── health.go         Shell-free runtime health-check command
 │   ├── main_test.go      Backend lifecycle, races, auth, failure/expiry tests
 │   └── *_test.go         Browser, encrypted-label, retention and recovery tests
 ├── web/
@@ -174,7 +201,8 @@ The Docker `packages` volume stores one directory per package plus the public `l
 │   ├── Caddyfile         HTTP loopback test listeners (never deploy publicly)
 │   ├── integration.test.mjs  Actual Caddy/API encryption/claim/large-transfer tests
 │   ├── metadata.test.mjs Encrypted-name privacy, browser audit and preview tests
-│   └── auth-helper.mjs   Independent test enrollment/key-derivation fixture
+│   ├── auth-helper.mjs   Independent test enrollment/key-derivation fixture
+│   └── claim-helper.mjs  Independent file-key-to-claim proof fixture
 └── README.md             Architecture, setup, protocol, limits, verification
 ```
 
@@ -202,11 +230,14 @@ node --test tests/*.test.mjs
 # needs >21 GiB free Docker disk AND >21 GiB in the host temporary directory
 LARGE_TEST_MIB=20480 node --test --test-name-pattern='optional large transfer' tests/integration.test.mjs
 
+# Sustained throttled transfer beyond the former two-minute cutoff (~165 seconds)
+LARGE_TEST_MIB=192 SLOW_RECORD_MS=6500 node --test --test-name-pattern='optional large transfer' tests/integration.test.mjs
+
 # Deletes ONLY the named test stack and its disposable data
 docker compose -p drive-test -f tests/compose.yaml down -v
 ```
 
-While the test stack is running, use a generated `http://localhost:18080/package/...#key` link for the public UI; the bare root intentionally returns an empty 404. Admin UI is `http://localhost:18081/admin`. Tests automatically enroll user `admin`, password `integration-admin-password-with-zero-server-knowledge`, using token `integration-setup-token-never-deploy-1234567890`. These test-only values are deliberately fixed and **must never be deployed**. For manual first-setup testing, use those same values before running the suite, or start with a new disposable test volume. Production certificate issuance, real VPN reachability, split DNS, firewall enforcement, and multiple real browser/OS combinations must be verified on the deployment server separately.
+While the test stack is running, use a generated `http://localhost:18080/package/...#key` link for the public UI; the bare root intentionally returns HTTP 404 with “Not found”. Admin UI is `http://localhost:18081/admin`. Tests automatically enroll user `admin`, password `integration-admin-password-with-zero-server-knowledge`, using token `integration-setup-token-never-deploy-1234567890`. These test-only values are deliberately fixed and **must never be deployed**. For manual first-setup testing, use those same values before running the suite, or start with a new disposable test volume. Production certificate issuance, real VPN reachability, split DNS, firewall enforcement, and multiple real browser/OS combinations must be verified on the deployment server separately.
 
 ### Verification performed
 
@@ -219,6 +250,10 @@ The private-metadata update passed 42 browser-module tests, nine Docker integrat
 The unified-login/portable-download revision passed **65 browser-module tests** and ten Docker integration tests, plus backend race/static checks. Real browser first-use enrollment succeeded; an independent Node derivation authenticated against that browser-created account and verified the stored file contains only the expected SHA-256 verifier, never the password, setup token, or authentication value. The UI automatically decrypted independently created names, displayed matching 1232px upload/audit panels in a 1280px viewport, and had a 0px header divider.
 
 Service Worker registration/control/probe and an actual synthetic ZIP response were verified in an independent installed Chrome profile (HTTP 200, exact byte count, ZIP attachment headers). VS Code's integrated Electron browser stalled worker activation, so the safe fallback path was also exercised; this is why feature detection alone is not treated as successful streaming support. Native Save dialogs and Firefox/Safari/iOS large-file saves still need real-device verification; no universal browser guarantee is made.
+
+The hardening revision passed **74 browser-module tests**, eleven Docker integration tests, backend race/static checks, and both source and exact-production-binary `govulncheck` scans (no known reachable vulnerabilities found). ID-only, wrong-token, and verifier-only requests were proven not to modify retrieval audit/state or delete ciphertext. Capacity rejection left packages ready for retry. The minimal image ran healthy as UID/GID 10001 and had no shell; an actual proxy error confirmed credential-header redaction.
+
+A throttled **192 MiB encrypted download completed in 165 seconds**, beyond the previous two-minute cutoff, and Python independently checked its archive contents/CRCs. The accelerated TCP regression failed on the old code after 8 MiB with unexpected EOF and passed after the deadline fix. Production Caddy TLS routing was also tested with an HTTP/2 bodyless, proof-authorized claim and a 404 “Not found” root. Consumed/failed/expired records no longer offer Delete in the admin UI; names remain editable for historical identification.
 
 ## Maintenance
 

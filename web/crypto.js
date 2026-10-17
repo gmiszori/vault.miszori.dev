@@ -16,6 +16,26 @@ export function decodeKey(value) {
   return bytes;
 }
 
+export async function deriveClaimToken(rawKey, id) {
+  if (!(rawKey instanceof Uint8Array) || rawKey.byteLength !== 32) throw new Error('Invalid file key.');
+  if (typeof id !== 'string' || id.length < 1 || id.length > 128 || /[^A-Za-z0-9_-]/.test(id)) throw new Error('Invalid package identifier.');
+  const key = await crypto.subtle.importKey('raw', rawKey, 'HKDF', false, ['deriveBits']);
+  const secret = new Uint8Array(await crypto.subtle.deriveBits({
+    name: 'HKDF', hash: 'SHA-256', salt: encoder.encode(id),
+    info: encoder.encode('drive.miszori.dev:package-claim:v1')
+  }, key, 256));
+  try { return encodeKey(secret); } finally { secret.fill(0); }
+}
+
+export async function claimHash(token) {
+  if (typeof token !== 'string') throw new Error('Invalid claim token.');
+  const secret = decodeKey(token);
+  try {
+    const digest = new Uint8Array(await crypto.subtle.digest('SHA-256', secret));
+    return Array.from(digest, byte => byte.toString(16).padStart(2, '0')).join('');
+  } finally { secret.fill(0); }
+}
+
 export function importKey(bytes) {
   return crypto.subtle.importKey('raw', bytes, 'AES-GCM', false, ['encrypt', 'decrypt']);
 }

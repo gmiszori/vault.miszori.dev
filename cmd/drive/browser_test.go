@@ -125,6 +125,7 @@ func TestBrowserClaimOnlyAndAtomicPersistence(t *testing.T) {
 		}
 	}
 	r := httptest.NewRequest("POST", path+"/consume", nil)
+	r.Header.Set("X-Claim-Token", downloadClaimTokenFixture)
 	r.RemoteAddr = "192.0.2.123:4444"
 	r.Header.Set("User-Agent", `Chrome/130 Windows NT 10.0 <script>alert('spoofed')</script>`)
 	r.Header.Set("Sec-CH-UA-Model", "must not collect model")
@@ -179,6 +180,7 @@ func TestConcurrentClaimCapturesOnlyWinnerProfile(t *testing.T) {
 			defer wg.Done()
 			ua := fmt.Sprintf("Firefox/130 Linux winner-%d", i)
 			r := httptest.NewRequest("POST", "/api/packages/"+id+"/consume", nil)
+			r.Header.Set("X-Claim-Token", downloadClaimTokenFixture)
 			r.Header.Set("User-Agent", ua)
 			r.RemoteAddr = fmt.Sprintf("192.0.2.%d:1234", i+1)
 			w := httptest.NewRecorder()
@@ -195,7 +197,7 @@ func TestConcurrentClaimCapturesOnlyWinnerProfile(t *testing.T) {
 			if s.packages[id].OpenedBrowser.UserAgent != result.ua {
 				t.Fatal("losing request overwrote profile")
 			}
-		} else if result.code != 404 {
+		} else if result.code != 404 && result.code != 429 {
 			t.Fatal("unexpected claim code", result.code)
 		}
 	}

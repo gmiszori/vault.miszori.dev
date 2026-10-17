@@ -15,6 +15,14 @@ import (
 	"time"
 )
 
+const downloadClaimTokenFixture = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+const downloadClaimHashFixture = "66687aadf862bd776c8fc18b8e9f8e20089714856ee233b3902a591d0d5f2925"
+
+func finalizeBody(chunks int) []byte {
+	body, _ := json.Marshal(map[string]any{"chunks": chunks, "claimHash": downloadClaimHashFixture})
+	return body
+}
+
 func testServer(t *testing.T) *Server {
 	t.Helper()
 	s, e := newServer(t.TempDir(), "admin", testSetupToken, "https://drive.example", 100*1024*1024)
@@ -29,6 +37,9 @@ func testServer(t *testing.T) *Server {
 func request(s *Server, method, path string, body []byte, auth bool, token string) *httptest.ResponseRecorder {
 	r := httptest.NewRequest(method, path, bytes.NewReader(body))
 	r.RemoteAddr = "192.0.2.55:1234"
+	if strings.HasSuffix(path, "/consume") {
+		r.Header.Set("X-Claim-Token", downloadClaimTokenFixture)
+	}
 	if auth {
 		r.SetBasicAuth("admin", testAuthentication)
 	}
@@ -60,7 +71,7 @@ func readyPackage(t *testing.T, s *Server) string {
 			t.Fatalf("upload %d %s", w.Code, w.Body)
 		}
 	}
-	w := request(s, "POST", "/api/admin/packages/"+id+"/finalize", []byte(`{"chunks":2}`), true, token)
+	w := request(s, "POST", "/api/admin/packages/"+id+"/finalize", finalizeBody(2), true, token)
 	if w.Code != 204 {
 		t.Fatal(w.Code, w.Body)
 	}
@@ -120,7 +131,7 @@ func TestConcurrentClaim(t *testing.T) {
 	for c := range codes {
 		if c == 200 {
 			success++
-		} else if c != 404 {
+		} else if c != 404 && c != 429 {
 			t.Fatal(c)
 		}
 	}
@@ -215,6 +226,7 @@ func TestDisconnectedClientDeletes(t *testing.T) {
 	s := testServer(t)
 	id := readyPackage(t, s)
 	r := httptest.NewRequest("POST", "/api/packages/"+id+"/consume", nil)
+	r.Header.Set("X-Claim-Token", downloadClaimTokenFixture)
 	s.ServeHTTP(&brokenWriter{make(http.Header)}, r)
 	if s.packages[id].Status != "failed" {
 		t.Fatal("disconnect not recorded")

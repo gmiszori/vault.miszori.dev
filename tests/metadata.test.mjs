@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { randomBytes, webcrypto } from 'node:crypto';
 import { adminSession, testPassword } from './auth-helper.mjs';
+import { protectPackage } from './claim-helper.mjs';
 
 const pub = process.env.TEST_PUBLIC_URL || 'http://localhost:18080';
 const admin = process.env.TEST_ADMIN_URL || 'http://localhost:18081';
@@ -11,12 +12,12 @@ async function api(path, method = 'GET', body, extra = {}) {
   return fetch(`${admin}/admin/api/${path}`, { method, headers: { ...auth, ...extra }, body: body === undefined ? undefined : JSON.stringify(body) });
 }
 async function create() {
-  const r = await api('packages', 'POST', { ttlSeconds: 3600 }); assert.equal(r.status, 201); return r.json();
+  const r = await api('packages', 'POST', { ttlSeconds: 3600 }); assert.equal(r.status, 201); return protectPackage(await r.json());
 }
 async function ready(p) {
   const upload = await fetch(`${admin}/admin/api/packages/${p.id}/chunks/0`, { method: 'PUT', headers: { ...auth, 'X-Upload-Token': p.uploadToken }, body: randomBytes(32) });
   assert.equal(upload.status, 204);
-  assert.equal((await api(`packages/${p.id}/finalize`, 'POST', { chunks: 1 }, { 'X-Upload-Token': p.uploadToken })).status, 204);
+  assert.equal((await api(`packages/${p.id}/finalize`, 'POST', { chunks: 1, claimHash: p.claimHash }, { 'X-Upload-Token': p.uploadToken })).status, 204);
 }
 async function entry(id) { return (await (await api('packages')).json()).packages.find(p => p.id === id); }
 async function encryptedName(id, text) {
@@ -56,11 +57,34 @@ test('admin labels stay encrypted, private, and independent of the package paylo
     assert.deepEqual(Object.keys(publicInfo).sort(), ['expiresAt', 'status']);
     assert.equal((await fetch(`${pub}/names.js`)).status, 404);
     assert.equal((await fetch(`${admin}/names.js`)).status, 200);
-    const claim = await fetch(`${pub}/api/packages/${p.id}/consume`, { method: 'POST' });
+    const claim = await fetch(`${pub}/api/packages/${p.id}/consume`, { method: 'POST', headers: p.claimHeaders });
     assert.equal(claim.status, 200); assert.equal((await claim.arrayBuffer()).byteLength, 36);
     assert.deepEqual((await entry(p.id)).encryptedName, envelope, 'names remain available in the historical audit');
     assert.equal((await api(`packages/${p.id}`, 'PATCH', { encryptedName: null })).status, 204);
     assert.equal((await entry(p.id)).encryptedName, undefined);
+  } finally { await api(`packages/${p.id}`, 'DELETE'); }
+});
+
+test('knowing the package ID or stored verifier cannot claim or destroy it', async () => {
+  const p = await create();
+  try {
+    await ready(p);
+    for (const token of ['', p.claimHash, encode(randomBytes(32))]) {
+      const response = await fetch(`${pub}/api/packages/${p.id}/consume`, { method: 'POST', headers: token ? { 'X-Claim-Token': token } : {} });
+      assert.equal(response.status, 404);
+      const info = await entry(p.id);
+      assert.equal(info.status, 'ready'); assert.equal(info.openedAt, undefined); assert.equal(info.openedBrowser, undefined);
+      assert.equal((await fetch(`${pub}/api/packages/${p.id}`)).status, 200);
+    }
+    const withBody = await fetch(`${pub}/api/packages/${p.id}/consume`, { method: 'POST', headers: p.claimHeaders, body: 'unexpected' });
+    assert.equal(withBody.status, 400); assert.equal((await entry(p.id)).status, 'ready');
+    const success = await fetch(`${pub}/api/packages/${p.id}/consume`, { method: 'POST', headers: p.claimHeaders });
+    assert.equal(success.status, 200); assert.equal((await success.arrayBuffer()).byteLength, 36);
+    const replay = await fetch(`${pub}/api/packages/${p.id}/consume`, { method: 'POST', headers: p.claimHeaders });
+    assert.equal(replay.status, 404);
+    const listed = await entry(p.id);
+    assert.equal(JSON.stringify(listed).includes(p.claimToken), false);
+    assert.equal(JSON.stringify(listed).includes(encode(p.rawKey)), false);
   } finally { await api(`packages/${p.id}`, 'DELETE'); }
 });
 
@@ -118,7 +142,7 @@ test('only an explicit claim records passive browser and device headers in the p
     const userAgent = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:130.0) Gecko/20100101 Firefox/130.0';
     await fetch(`${pub}/api/packages/${p.id}`, { headers: { 'User-Agent': userAgent } });
     assert.equal((await entry(p.id)).openedBrowser, undefined);
-    const response = await fetch(`${pub}/api/packages/${p.id}/consume`, { method: 'POST', headers: { 'User-Agent': userAgent } });
+    const response = await fetch(`${pub}/api/packages/${p.id}/consume`, { method: 'POST', headers: { ...p.claimHeaders, 'User-Agent': userAgent } });
     assert.equal(response.status, 200); await response.arrayBuffer();
     const info = await entry(p.id);
     assert.match(info.openedBrowser.browser, /Firefox/i); assert.match(info.openedBrowser.os, /Windows/i);

@@ -8,6 +8,7 @@ import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { ZipWriter, archiveSize } from '../web/zip.js';
 import { adminSession } from './auth-helper.mjs';
+import { protectPackage } from './claim-helper.mjs';
 
 const execute = promisify(execFile);
 
@@ -20,14 +21,14 @@ async function adminFetch(path, method = 'GET', body, extra = {}) {
 }
 async function create(ttlSeconds = 3600) {
   const r = await adminFetch('packages', 'POST', JSON.stringify({ ttlSeconds }));
-  assert.equal(r.status, 201); return r.json();
+  assert.equal(r.status, 201); return protectPackage(await r.json());
 }
 async function upload(p, n, ciphertext) {
   const r = await adminFetch(`packages/${p.id}/chunks/${n}`, 'PUT', ciphertext, { 'X-Upload-Token': p.uploadToken });
   assert.equal(r.status, 204, await r.text());
 }
 async function finalize(p, chunks) {
-  const r = await adminFetch(`packages/${p.id}/finalize`, 'POST', JSON.stringify({ chunks }), { 'X-Upload-Token': p.uploadToken });
+  const r = await adminFetch(`packages/${p.id}/finalize`, 'POST', JSON.stringify({ chunks, claimHash: p.claimHash }), { 'X-Upload-Token': p.uploadToken });
   assert.equal(r.status, 204, await r.text());
 }
 function parameters(id, index) {
@@ -59,7 +60,7 @@ test('Caddy isolates admin routes and supplies privacy headers', async () => {
     const r = await fetch(pub + path, { headers: auth }); assert.equal(r.status, 404, path);
   }
   for (const origin of [pub, admin]) {
-    const root = await fetch(origin); assert.equal(root.status, 404); assert.equal(await root.text(), '');
+    const root = await fetch(origin); assert.equal(root.status, 404); assert.equal(await root.text(), 'Not found');
     const unusedStream = await fetch(`${origin}/local-download/${'0'.repeat(64)}`);
     assert.equal(unusedStream.status, 404); assert.equal(await unusedStream.text(), '');
   }
@@ -84,7 +85,7 @@ test('Caddy isolates admin routes and supplies privacy headers', async () => {
 });
 
 test('browser-compatible AES-GCM package streams once, with audit and key-bound authentication', async () => {
-  const p = await create(); const rawKey = randomBytes(32);
+  const p = await create(); const rawKey = p.rawKey;
   const key = await webcrypto.subtle.importKey('raw', rawKey, 'AES-GCM', false, ['encrypt', 'decrypt']);
   const manifest = { version: 1, files: [{ path: 'private/folder/秘密.txt', size: chunkSize + 17, lastModified: Date.now() }], chunkSize };
   const plaintext = [new TextEncoder().encode(JSON.stringify(manifest)), randomBytes(chunkSize), randomBytes(17)];
@@ -96,7 +97,7 @@ test('browser-compatible AES-GCM package streams once, with audit and key-bound 
   await finalize(p, plaintext.length);
   assert.equal((await fetch(`${pub}/api/packages/${p.id}`)).status, 200);
   assert.equal((await fetch(`${pub}/api/packages/${p.id}`)).status, 200, 'previews must not consume');
-  const response = await fetch(`${pub}/api/packages/${p.id}/consume`, { method: 'POST', headers: { 'X-Real-IP': '1.2.3.4', 'X-Forwarded-For': '1.2.3.4' } });
+  const response = await fetch(`${pub}/api/packages/${p.id}/consume`, { method: 'POST', headers: { ...p.claimHeaders, 'X-Real-IP': '1.2.3.4', 'X-Forwarded-For': '1.2.3.4' } });
   let i = 0;
   for await (const encrypted of records(response)) {
     const decoded = await webcrypto.subtle.decrypt(parameters(p.id, i), key, encrypted);
@@ -115,9 +116,9 @@ test('browser-compatible AES-GCM package streams once, with audit and key-bound 
 
 test('concurrent claims allow exactly one response', async () => {
   const p = await create(); await upload(p, 0, randomBytes(32)); await finalize(p, 1);
-  const responses = await Promise.all(Array.from({ length: 8 }, () => fetch(`${pub}/api/packages/${p.id}/consume`, { method: 'POST' })));
+  const responses = await Promise.all(Array.from({ length: 8 }, () => fetch(`${pub}/api/packages/${p.id}/consume`, { method: 'POST', headers: p.claimHeaders })));
   assert.equal(responses.filter(r => r.status === 200).length, 1);
-  assert.equal(responses.filter(r => r.status === 404).length, 7);
+  assert.equal(responses.filter(r => r.status === 404 || r.status === 429).length, 7);
   await Promise.all(responses.map(r => r.arrayBuffer()));
 });
 
@@ -147,13 +148,15 @@ test('real expiry makes a package unavailable and the background worker deletes 
 
 test('optional large transfer produces a native-compatible streaming ZIP64 archive', { skip: !process.env.LARGE_TEST_MIB }, async () => {
   const mib = Number(process.env.LARGE_TEST_MIB); assert.ok(Number.isInteger(mib) && mib > 0 && mib <= 20480);
+  const recordDelay = Number(process.env.SLOW_RECORD_MS || 0);
+  assert.ok(Number.isInteger(recordDelay) && recordDelay >= 0 && recordDelay <= 10000);
   const directory = await mkdtemp(join(tmpdir(), 'drive-zip-test-'));
   const filename = join(directory, 'package.zip');
   let p;
   let handle;
   try {
     p = await create(86400);
-    const key = await webcrypto.subtle.generateKey({ name: 'AES-GCM', length: 256 }, false, ['encrypt', 'decrypt']);
+    const key = await webcrypto.subtle.importKey('raw', p.rawKey, 'AES-GCM', false, ['encrypt', 'decrypt']);
     const data = randomBytes(chunkSize);
     const marker = Buffer.from('Nested ZIP64 marker: 世界\n');
     const files = [
@@ -176,7 +179,8 @@ test('optional large transfer produces a native-compatible streaming ZIP64 archi
     await finalize(p, count);
     handle = await open(filename, 'w');
     const zip = new ZipWriter({ async write(bytes) { await handle.writeFile(bytes); }, async close() { await handle.close(); handle = null; } });
-    const response = await fetch(`${pub}/api/packages/${p.id}/consume`, { method: 'POST' });
+    const downloadStarted = performance.now();
+    const response = await fetch(`${pub}/api/packages/${p.id}/consume`, { method: 'POST', headers: p.claimHeaders });
     const framed = records(response)[Symbol.asyncIterator]();
     const nextPlain = async index => {
       const frame = await framed.next(); assert.equal(frame.done, false);
@@ -191,11 +195,17 @@ test('optional large transfer produces a native-compatible streaming ZIP64 archi
         assert.equal(decoded.length, Math.min(left, chunkSize));
         assert.deepEqual(Buffer.from(decoded), (index === 0 ? data : marker).subarray(0, decoded.length));
         await zip.write(decoded); left -= decoded.length; bytes += decoded.length;
+        if (recordDelay) await new Promise(resolve => setTimeout(resolve, recordDelay));
       }
       await zip.endFile();
     }
     assert.equal((await framed.next()).done, true);
     await zip.close();
+    const elapsed = performance.now() - downloadStarted;
+    if (recordDelay) {
+      assert.ok(elapsed >= (count - 1) * recordDelay);
+      console.log(`Throttled authenticated download completed in ${Math.round(elapsed / 1000)} seconds`);
+    }
     assert.equal(bytes, mib * 1024 * 1024); assert.equal(n, count);
     assert.equal((await stat(filename)).size, archiveSize(files));
     const verification = await execute('python3', ['-c', `
@@ -211,7 +221,7 @@ with zipfile.ZipFile(sys.argv[1]) as archive:
     assert archive.read('nested/世界.txt') == 'Nested ZIP64 marker: 世界\\n'.encode()
     assert archive.read('empty.txt') == b''
     assert archive.testzip() is None
-print('Native Python ZIP reader verified every entry CRC, ZIP64 sizes/offsets, Unicode, and empty files')
+print('Native Python ZIP reader verified every entry CRC, archive sizes/offsets, Unicode, and empty files')
 `, filename, String(bytes)]);
     console.log(verification.stdout.trim());
   } finally {

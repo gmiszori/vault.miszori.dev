@@ -38,6 +38,7 @@ type Package struct {
 	Chunks        int             `json:"chunks"`
 	Bytes         int64           `json:"bytes"`
 	TokenHash     string          `json:"-"`
+	ClaimHash     string          `json:"claimHash,omitempty"`
 	EncryptedName *EncryptedName  `json:"encryptedName,omitempty"`
 	OpenedBrowser *BrowserProfile `json:"openedBrowser,omitempty"`
 }
@@ -59,6 +60,7 @@ type Server struct {
 	quota              int64
 	now                func() time.Time
 	labelKey           LabelKey
+	gate               *requestGate
 }
 
 func randomID() string {
@@ -127,7 +129,7 @@ func newServer(root, user, setupToken, origin string, quota int64) (*Server, err
 	if user == "" {
 		user = "admin"
 	}
-	s := &Server{root: root, user: user, origin: origin, quota: quota, packages: map[string]*Package{}, limits: map[string]bucket{}, now: time.Now}
+	s := &Server{root: root, user: user, origin: origin, quota: quota, packages: map[string]*Package{}, limits: map[string]bucket{}, now: time.Now, gate: newRequestGate(defaultGateLimits())}
 	if err := os.MkdirAll(root, 0700); err != nil {
 		return nil, err
 	}
@@ -254,9 +256,14 @@ func (s *Server) allowed(key string, n int) bool {
 	return b.count <= n
 }
 func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	controller := http.NewResponseController(w)
-	_ = controller.SetReadDeadline(time.Now().Add(2 * time.Minute))
-	defer controller.SetReadDeadline(time.Time{})
+	if r.ContentLength != 0 {
+		// Error responses must not leave an unread body draining on an unbounded keep-alive socket.
+		r.Close = true
+		w.Header().Set("Connection", "close")
+		controller := http.NewResponseController(w)
+		_ = controller.SetReadDeadline(time.Now().Add(2 * time.Minute))
+		defer controller.SetReadDeadline(time.Time{})
+	}
 	w.Header().Set("Cache-Control", "no-store")
 	w.Header().Set("X-Content-Type-Options", "nosniff")
 	w.Header().Set("Referrer-Policy", "no-referrer")
@@ -264,6 +271,13 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, 200, map[string]bool{"ok": true})
 		return
 	}
+	release, admitted := s.gate.acquire(r)
+	if !admitted {
+		w.Header().Set("Retry-After", "5")
+		fail(w, 429, "Server busy; no package has been claimed")
+		return
+	}
+	defer release()
 	admin := strings.HasPrefix(r.URL.Path, "/api/admin/")
 	if admin {
 		if !sameOrigin(r) {
@@ -271,7 +285,7 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		if r.URL.Path == "/api/admin/auth" && r.Method == http.MethodGet {
-			if !s.allowed("discovery:"+peerIP(r), 20) {
+			if !s.gate.allowPublic(s.now()) || !s.allowed("discovery:"+peerIP(r), 20) {
 				fail(w, 429, "Too many requests")
 				return
 			}
@@ -285,6 +299,10 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		if r.URL.Path == "/api/admin/setup" && r.Method == http.MethodPost {
+			if !s.gate.allowPublic(s.now()) {
+				fail(w, 429, "Too many requests")
+				return
+			}
 			s.setup(w, r)
 			return
 		}
@@ -295,7 +313,7 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		s.admin(w, r)
 		return
 	}
-	if !s.allowed("public:"+peerIP(r), 120) {
+	if !s.gate.allowPublic(s.now()) || !s.allowed("public:"+peerIP(r), 120) {
 		fail(w, 429, "Too many requests")
 		return
 	}
@@ -306,6 +324,12 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	id := parts[2]
 	if len(parts) == 4 && parts[3] == "consume" && r.Method == "POST" {
+		if r.ContentLength != 0 || len(r.TransferEncoding) != 0 {
+			r.Close = true
+			w.Header().Set("Connection", "close")
+			fail(w, 400, "Download claims must not contain a request body")
+			return
+		}
 		if r.Header.Get("Sec-Fetch-Site") == "cross-site" {
 			fail(w, 403, "Cross-origin request denied")
 			return
@@ -317,7 +341,7 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		s.mu.Lock()
 		defer s.mu.Unlock()
 		p := s.packages[id]
-		if p == nil || p.Status != "ready" || !s.now().Before(p.ExpiresAt) {
+		if p == nil || p.Status != "ready" || !validClaimHash(p.ClaimHash) || !s.now().Before(p.ExpiresAt) {
 			fail(w, 404, "Package already viewed or does not exist")
 			return
 		}
@@ -464,16 +488,18 @@ func (s *Server) admin(w http.ResponseWriter, r *http.Request) {
 	}
 	if len(parts) == 3 && parts[2] == "finalize" && r.Method == "POST" {
 		var req struct {
-			Chunks int `json:"chunks"`
+			Chunks    int    `json:"chunks"`
+			ClaimHash string `json:"claimHash"`
 		}
 		if !decode(w, r, &req) {
 			return
 		}
-		if req.Chunks != p.Chunks || req.Chunks < 1 {
+		if req.Chunks != p.Chunks || req.Chunks < 1 || !validClaimHash(req.ClaimHash) {
 			fail(w, 400, "Incomplete package")
 			return
 		}
 		p.Status = "ready"
+		p.ClaimHash = req.ClaimHash
 		p.TokenHash = ""
 		if err := s.save(p); err != nil {
 			p.Status = "failed"
@@ -489,7 +515,7 @@ func (s *Server) admin(w http.ResponseWriter, r *http.Request) {
 func (s *Server) consume(w http.ResponseWriter, r *http.Request, id string) {
 	s.mu.Lock()
 	p := s.packages[id]
-	if p == nil || p.Status != "ready" || !s.now().Before(p.ExpiresAt) {
+	if p == nil || p.Status != "ready" || !s.now().Before(p.ExpiresAt) || !matchesClaimToken(r.Header.Get("X-Claim-Token"), p.ClaimHash) {
 		s.mu.Unlock()
 		fail(w, 404, "Package already viewed or does not exist")
 		return
@@ -561,6 +587,19 @@ func env(key, def string) string {
 	return def
 }
 func main() {
+	if len(os.Args) > 1 {
+		if len(os.Args) != 2 || os.Args[1] != "healthcheck" {
+			log.Fatal("Unknown command")
+		}
+		if err := healthCheck("http://127.0.0.1:8080/healthz"); err != nil {
+			log.Fatal(err)
+		}
+		return
+	}
+	limits, err := gateLimitsFromEnv()
+	if err != nil {
+		log.Fatal("Invalid resource limits: ", err)
+	}
 	origin := env("PUBLIC_ORIGIN", "https://drive.miszori.dev")
 	quota, err := strconv.ParseInt(env("MAX_STORAGE_BYTES", "107374182400"), 10, 64)
 	if err != nil || quota < maxChunk {
@@ -570,7 +609,12 @@ func main() {
 	if err != nil {
 		log.Fatal("Cannot initialize storage: ", err)
 	}
+	s.gate = newRequestGate(limits)
 	server := &http.Server{Addr: ":8080", Handler: s, ReadHeaderTimeout: 10 * time.Second, IdleTimeout: 60 * time.Second, MaxHeaderBytes: 16384}
+	listener, err := net.Listen("tcp", server.Addr)
+	if err != nil {
+		log.Fatal(err)
+	}
 	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer cancel()
 	go func() {
@@ -598,7 +642,7 @@ func main() {
 		}
 	}()
 	log.Print("Encrypted package service listening on :8080")
-	if err = server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+	if err = server.Serve(s.gate.limitListener(listener)); err != nil && err != http.ErrServerClosed {
 		log.Fatal(err)
 	}
 	<-shutdownDone

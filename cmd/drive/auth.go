@@ -67,7 +67,7 @@ func (s *Server) authThrottled(r *http.Request) bool {
 }
 
 func (s *Server) authFailure(w http.ResponseWriter, r *http.Request, code int, message string) {
-	if !s.allowed("auth:"+peerIP(r), 20) {
+	if !s.gate.allowAuthFailure(s.now()) || !s.allowed("auth:"+peerIP(r), 20) {
 		fail(w, 429, "Too many attempts")
 		return
 	}
@@ -144,6 +144,7 @@ func (s *Server) setup(w http.ResponseWriter, r *http.Request) {
 		Authentication string `json:"authentication"`
 	}
 	if !decode(w, r, &req) {
+		s.gate.allowAuthFailure(s.now())
 		s.allowed("auth:"+peerIP(r), 20)
 		return
 	}

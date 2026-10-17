@@ -1,6 +1,24 @@
 {
 	admin off
 	auto_https off
+	log {
+		format filter {
+			wrap json
+			fields {
+				request>headers>X-Claim-Token delete
+				request>headers>X-Upload-Token delete
+				request>headers>Authorization delete
+				request>headers>Cookie delete
+			}
+		}
+	}
+	servers {
+		max_header_size 16KB
+		timeouts {
+			read_header 10s
+			idle 1m
+		}
+	}
 }
 
 (headers) {
@@ -18,14 +36,21 @@
 		header_up -Forwarded
 		header_up -X-Forwarded-For
 		flush_interval -1
+		transport http {
+			max_conns_per_host 64
+			keepalive 1m
+			keepalive_idle_conns_per_host 16
+		}
 	}
 }
 
 :8080 {
 	import headers
 	root * /srv
-	@empty path / /local-download/*
-	handle @empty {
+	handle / {
+		respond "Not found" 404
+	}
+	handle /local-download/* {
 		respond "" 404
 	}
 	@private path /admin /admin/* /admin.html /admin.js /api/admin /api/admin/*
@@ -53,8 +78,10 @@
 :8081 {
 	import headers
 	root * /srv
-	@empty path / /local-download/*
-	handle @empty {
+	handle / {
+		respond "Not found" 404
+	}
+	handle /local-download/* {
 		respond "" 404
 	}
 	handle /admin/api/* {

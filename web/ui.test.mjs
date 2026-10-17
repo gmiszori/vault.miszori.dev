@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
+import { webcrypto } from 'node:crypto';
 import { CHUNK_SIZE, MEMORY_LIMIT, encodeKey, decodeKey, importKey, encryptChunk, decryptChunk, parseManifest, serializeManifest } from './crypto.js';
 import { archiveSize } from './zip.js';
 import { encryptName, decryptName } from './names.js';
@@ -113,11 +114,33 @@ function assertZip(archive, entries, payloads) {
   assert.equal(directory, end);
 }
 
+async function independentClaim(raw, id) {
+  const key = await webcrypto.subtle.importKey('raw', raw, 'HKDF', false, ['deriveBits']);
+  const secret = await webcrypto.subtle.deriveBits({
+    name: 'HKDF', hash: 'SHA-256', salt: new TextEncoder().encode(id),
+    info: new TextEncoder().encode('drive.miszori.dev:package-claim:v1')
+  }, key, 256);
+  return {
+    token: Buffer.from(secret).toString('base64url'),
+    hash: Buffer.from(await webcrypto.subtle.digest('SHA-256', secret)).toString('hex')
+  };
+}
+
 test('public opening removes the key and only explicit consent consumes; fallback saves ZIP', async () => {
   const data = await packageStream(files, [content]);
   const calls = [];
+  const proof = await independentClaim(data.raw, 'pkg-123');
   const ui = await harness('public', async (path, options) => {
     assert.equal(location.hash, '');
+    assert.equal(options.referrerPolicy, 'no-referrer');
+    assert.equal(options.credentials, 'omit');
+    assert.equal(options.body, undefined);
+    if (options.method === 'POST') {
+      assert.equal(path, '/api/packages/pkg-123/consume');
+      assert.deepEqual(options.headers, { 'X-Claim-Token': proof.token });
+    } else {
+      assert.equal(options.headers, undefined, 'metadata checks must not send the claim proof');
+    }
     assert.ok(!String(path).includes(encodeKey(data.raw)));
     assert.ok(!JSON.stringify(options).includes(encodeKey(data.raw)));
     calls.push([path, options]);
@@ -216,6 +239,71 @@ test('save picker runs before consuming, and writable output is streamed without
   } finally { ui.restore(); }
 });
 
+test('429 aborts a file destination and a new explicit attempt can save the package', async () => {
+  const data = await packageStream(files, [content]);
+  const proof = await independentClaim(data.raw, 'pkg-123');
+  let requests = 0;
+  let destinations = 0;
+  let aborts = 0;
+  let closes = 0;
+  const parts = [];
+  const ui = await harness('public', async (path, options) => {
+    if (options.method !== 'POST') return ready();
+    assert.deepEqual(options.headers, { 'X-Claim-Token': proof.token });
+    return ++requests === 1 ? new Response(null, { status: 429 }) : new Response(data.body);
+  }, { hash: `#${encodeKey(data.raw)}`, picker: async () => {
+    destinations++;
+    return { createWritable: async () => ({
+      async write(bytes) { parts.push(Buffer.from(bytes)); },
+      async close() { closes++; }, async abort() { aborts++; }
+    }) };
+  } });
+  try {
+    await until(() => ui.$('package-state').textContent === 'Ready');
+    ui.$('download-consent').checked = true;
+    await ui.$('download-button').dispatch('click');
+    assert.equal(requests, 1);
+    assert.equal(aborts, 1);
+    assert.equal(closes, 0);
+    assert.equal(parts.length, 0);
+    assert.equal(ui.$('download-button').disabled, false);
+    assert.equal(ui.$('package-state').textContent, 'Ready');
+    assert.match(ui.$('download-status').textContent, /not been claimed/);
+    await ui.$('download-button').dispatch('click');
+    assert.equal(requests, 2);
+    assert.equal(destinations, 2);
+    assert.equal(closes, 1);
+    assert.equal(aborts, 1);
+    assertZip(Buffer.concat(parts), files, [content, new Uint8Array()]);
+    assert.equal(ui.$('package-state').textContent, 'Downloaded');
+  } finally { ui.restore(); }
+});
+
+test('network errors and 502 remain ambiguous irreversible failures, not safe retries', async () => {
+  for (const failure of ['network', '502']) {
+    let requests = 0;
+    let aborts = 0;
+    const raw = new Uint8Array(32).fill(9);
+    const ui = await harness('public', async (path, options) => {
+      if (options.method !== 'POST') return ready();
+      requests++;
+      if (failure === 'network') throw new TypeError('Network error');
+      return new Response(null, { status: 502 });
+    }, { hash: `#${encodeKey(raw)}`, picker: async () => ({ createWritable: async () => ({ async abort() { aborts++; } }) }) });
+    try {
+      await until(() => ui.$('package-state').textContent === 'Ready');
+      ui.$('download-consent').checked = true;
+      await ui.$('download-button').dispatch('click');
+      assert.equal(ui.$('package-state').textContent, 'Unavailable', failure);
+      assert.match(ui.$('download-status').textContent, /cannot be resumed/);
+      assert.equal(ui.$('download-button').disabled, true);
+      await ui.$('download-button').dispatch('click');
+      assert.equal(requests, 1);
+      assert.equal(aborts, 1);
+    } finally { ui.restore(); }
+  }
+});
+
 test('cancelling the save picker does not consume or invalidate the package', async () => {
   let consumes = 0;
   const raw = new Uint8Array(32);
@@ -262,6 +350,10 @@ test('an incomplete transfer aborts the destination and can never be retried', a
     await ui.$('download-button').dispatch('click');
     await ui.$('download-button').dispatch('click');
     assert.equal(consumes, 1); assert.equal(aborts, 1); assert.equal(closes, 0);
+    assert.equal(ui.$('package-state').textContent, 'Unavailable');
+    assert.equal(ui.$('package-title').textContent, 'Package unavailable');
+    assert.match(ui.$('package-description').textContent, /cannot be resumed/);
+    assert.doesNotMatch(ui.$('package-description').textContent, /Ready to download/);
     assert.match(ui.$('download-status').textContent, /cannot be resumed/);
   } finally { ui.restore(); }
 });
@@ -400,6 +492,25 @@ test('audit shows compact nonwrapping package IDs but preserves full IDs for tit
   } finally { ui.restore(); }
 });
 
+test('audit allows deletion only for active data while preserving historic name actions', async () => {
+  const statuses = ['uploading', 'ready', 'consuming', 'consumed', 'failed', 'expired', 'deleted', 'future-status', undefined];
+  const packages = statuses.map((status, index) => ({ id: `status-${index}`, status }));
+  const ui = await signedInAdmin(async path => path.endsWith('/config')
+    ? json({ publicOrigin: 'https://drive.example', labelKey }) : json({ packages }));
+  try {
+    for (const [index, status] of statuses.entries()) {
+      const buttons = ui.$('audit-body').children[index].children[5].children;
+      assert.deepEqual(buttons.map(button => button.textContent),
+        status === 'uploading' || status === 'ready' ? ['Delete', 'Name'] : ['Name'], String(status));
+      const name = buttons.at(-1);
+      assert.equal(name['aria-label'], `Name package status-${index}`);
+      await name.dispatch('click');
+      assert.equal(ui.$('name-dialog').open, true);
+      await ui.$('cancel-name').dispatch('click');
+    }
+  } finally { ui.restore(); }
+});
+
 test('admin validates upload paths, encrypts sequential records, finalizes and forgets credentials on signout', async () => {
   const uploads = [];
   let finalized;
@@ -427,14 +538,20 @@ test('admin validates upload paths, encrypts sequential records, finalizes and f
     await ui.$('file-input').dispatch('change');
     await ui.$('upload-button').dispatch('click');
     assert.equal(ui.$('result-panel').hidden, false);
-    assert.deepEqual(finalized, { chunks: 2 });
+    assert.match(finalized.claimHash, /^[a-f0-9]{64}$/);
     const puts = uploads.filter(([, options]) => options.method === 'PUT');
     assert.deepEqual(puts.map(([path]) => path), ['/admin/api/packages/pkg-123/chunks/0', '/admin/api/packages/pkg-123/chunks/1']);
     const link = ui.$('share-link').value;
     assert.ok(link.startsWith('https://drive.example/package/pkg-123#'));
     const keyText = link.split('#')[1];
+    assert.match(keyText, /^[A-Za-z0-9_-]{43}$/);
+    const proof = await independentClaim(decodeKey(keyText), 'pkg-123');
+    assert.deepEqual(finalized, { chunks: 2, claimHash: proof.hash });
     for (const [path, options] of uploads) {
       assert.ok(!path.includes(keyText));
+      assert.ok(!JSON.stringify(options.headers).includes(keyText));
+      assert.equal(options.headers['X-Claim-Token'], undefined);
+      assert.ok(!JSON.stringify(options).includes(proof.token), 'admin must send only the verifier, not the claim token');
       if (typeof options.body === 'string') assert.ok(!options.body.includes(keyText));
     }
     const key = await importKey(decodeKey(keyText));

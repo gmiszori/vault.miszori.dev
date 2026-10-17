@@ -1,8 +1,25 @@
 {
+	admin off
 	email {$ACME_EMAIL}
 	auto_https disable_redirects
+	log {
+		format filter {
+			wrap json
+			fields {
+				request>headers>X-Claim-Token delete
+				request>headers>X-Upload-Token delete
+				request>headers>Authorization delete
+				request>headers>Cookie delete
+			}
+		}
+	}
 	servers {
 		protocols h1 h2
+		max_header_size 16KB
+		timeouts {
+			read_header 10s
+			idle 1m
+		}
 	}
 }
 
@@ -28,12 +45,17 @@
 		header_up -X-Forwarded-Host
 		header_up -X-Forwarded-Proto
 		flush_interval -1
+		transport http {
+			max_conns_per_host 64
+			keepalive 1m
+			keepalive_idle_conns_per_host 16
+		}
 	}
 }
 
 http://{$DOMAIN} {
 	handle / {
-		respond "" 404
+		respond "Not found" 404
 	}
 	handle {
 		redir https://{$DOMAIN}{uri} 308
@@ -43,8 +65,10 @@ http://{$DOMAIN} {
 https://{$DOMAIN} {
 	import common_headers
 	root * /srv
-	@empty path / /local-download/*
-	handle @empty {
+	handle / {
+		respond "Not found" 404
+	}
+	handle /local-download/* {
 		respond "" 404
 	}
 	@private path /admin /admin/* /admin.html /admin.js /api/admin /api/admin/*
@@ -71,7 +95,7 @@ https://{$DOMAIN} {
 
 :8081 {
 	handle / {
-		respond "" 404
+		respond "Not found" 404
 	}
 	handle {
 		redir https://{$DOMAIN}{uri} 308
@@ -81,8 +105,10 @@ https://{$DOMAIN} {
 https://{$DOMAIN}:8443 {
 	import common_headers
 	root * /srv
-	@empty path / /local-download/*
-	handle @empty {
+	handle / {
+		respond "Not found" 404
+	}
+	handle /local-download/* {
 		respond "" 404
 	}
 	handle /admin/api/* {

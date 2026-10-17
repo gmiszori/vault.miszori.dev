@@ -1,4 +1,4 @@
-import { CHUNK_SIZE, MEMORY_LIMIT, decodeKey, importKey, decryptChunk, parseManifest, FramedReader, formatBytes } from './crypto.js';
+import { CHUNK_SIZE, MEMORY_LIMIT, decodeKey, importKey, decryptChunk, parseManifest, FramedReader, formatBytes, deriveClaimToken } from './crypto.js';
 import { ZipWriter, archiveSize } from './zip.js';
 import { prepareServiceWorkerDownload } from './download.js';
 
@@ -108,7 +108,9 @@ async function download() {
       }
     }
     $('fallback-warning').hidden = !boundedFallback;
+    controller.signal.throwIfAborted();
     const key = await importKey(keyBytes);
+    const claimToken = await deriveClaimToken(keyBytes, id);
     controller.signal.throwIfAborted();
     $('download-progress').hidden = false;
     $('cancel-download').hidden = false;
@@ -120,8 +122,22 @@ async function download() {
     available = false;
     packageState('Downloading');
     const response = await fetch(`/api/packages/${encodeURIComponent(id)}/consume`, {
-      method: 'POST', signal: controller.signal, credentials: 'omit', cache: 'no-store', referrerPolicy: 'no-referrer'
+      method: 'POST', headers: { 'X-Claim-Token': claimToken }, signal: controller.signal, credentials: 'omit', cache: 'no-store', referrerPolicy: 'no-referrer'
     });
+    if (response.status === 429) {
+      consumed = false;
+      available = Boolean(keyBytes);
+      controller.abort();
+      try { await response.body?.cancel(); } catch { /* The rejection body may already be closed. */ }
+      try { await sink?.abort(); } catch { /* The destination may already be closed. */ }
+      packageState(available ? 'Ready' : 'Unavailable');
+      $('download-progress').hidden = true;
+      $('download-meter').value = 0;
+      $('download-percent').textContent = '0%';
+      $('download-stage').textContent = 'Not started';
+      status('The server is busy. Your package has not been claimed. Wait a moment, then press Download to try again.', true);
+      return;
+    }
     if (!response.ok) {
       await response.body?.cancel();
       throw new Error(response.status === 404 || response.status === 409 || response.status === 410
@@ -173,6 +189,8 @@ async function download() {
       : aborted ? 'Save cancelled. Your package has not been claimed.' : `Could not prepare a save destination. ${error.message} Your package has not been claimed.`, !aborted || consumed);
     if (consumed) {
       packageState('Unavailable');
+      $('package-title').textContent = 'Package unavailable';
+      $('package-description').textContent = 'This transfer has stopped and cannot be resumed. Ask the sender for a new package.';
       $('availability').textContent = 'Claimed or unavailable';
       $('download-stage').textContent = 'Transfer stopped — not recoverable';
       keyBytes?.fill(0);
