@@ -350,6 +350,16 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	fail(w, 404, "Not found")
 }
+func (s *Server) storageUsedLocked() int64 {
+	var used int64
+	for _, p := range s.packages {
+		if p.Status == "ready" || p.Status == "uploading" || p.Status == "consuming" {
+			used += p.Bytes
+		}
+	}
+	return used
+}
+
 func (s *Server) admin(w http.ResponseWriter, r *http.Request) {
 	path := strings.TrimPrefix(r.URL.Path, "/api/admin/")
 	if path == "config" && r.Method == "GET" {
@@ -363,7 +373,10 @@ func (s *Server) admin(w http.ResponseWriter, r *http.Request) {
 		for _, p := range s.packages {
 			ps = append(ps, *p)
 		}
-		writeJSON(w, 200, map[string]any{"packages": ps})
+		writeJSON(w, 200, map[string]any{
+			"packages": ps,
+			"storage":  map[string]int64{"usedBytes": s.storageUsedLocked(), "maxBytes": s.quota},
+		})
 		return
 	}
 	if path == "packages" && r.Method == "POST" {
@@ -448,12 +461,7 @@ func (s *Server) admin(w http.ResponseWriter, r *http.Request) {
 			fail(w, 409, "Chunks must be uploaded in order; retries must reuse the next index")
 			return
 		}
-		var used int64
-		for _, other := range s.packages {
-			if other.Status == "ready" || other.Status == "uploading" || other.Status == "consuming" {
-				used += other.Bytes
-			}
-		}
+		used := s.storageUsedLocked()
 		f, err := os.OpenFile(s.chunk(p.ID, n)+".tmp", os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0600)
 		if err != nil {
 			fail(w, 500, "Storage unavailable")

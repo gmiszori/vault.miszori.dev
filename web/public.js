@@ -234,17 +234,17 @@ async function initialize() {
   if (blobURL) { URL.revokeObjectURL(blobURL); blobURL = null; }
   status('');
   try {
-    if (!route) throw new Error('This package either does not exist or has already been downloaded.');
+    if (!route) throw new Error('');
     if (!window.isSecureContext || !crypto.subtle) throw new Error('Browser encryption requires a secure HTTPS connection and Web Crypto support.');
     try { keyBytes = decodeKey(fragment); } catch { throw new Error(''); }
     fragment = '';
     const response = await fetch(`/api/packages/${encodeURIComponent(route[1])}`, { credentials: 'omit', cache: 'no-store', referrerPolicy: 'no-referrer' });
     if (attempt !== initialization) return;
-    if (!response.ok) throw new Error(response.status === 404 || response.status === 410 ? 'This package does not exist, or it has already been claimed, expired, or deleted.' : 'Unable to check this package. Reopen the original complete link to try again; nothing has been consumed.');
+    if (!response.ok) throw new Error(response.status === 404 || response.status === 410 ? '' : 'Unable to check this package. Reopen the original complete link to try again; nothing has been consumed.');
     const info = await response.json();
     if (attempt !== initialization) return;
     expiresAt = Date.parse(info.expiresAt);
-    if (info.status !== 'ready' || !Number.isFinite(expiresAt) || expiresAt <= Date.now()) throw new Error('This package is not available. Ask the sender for a new link.');
+    if (info.status !== 'ready' || !Number.isFinite(expiresAt) || expiresAt <= Date.now()) throw new Error('');
     available = true;
     packageState('Ready');
     $('availability').textContent = `Until ${new Date(expiresAt).toLocaleString()}`;

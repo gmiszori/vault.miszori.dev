@@ -57,6 +57,7 @@
       <section class="panel audit-panel" aria-labelledby="audit-title">
         <div class="panel-heading"><h2 id="audit-title">Transfer activity</h2><button id="refresh-list" class="button quiet small" type="button">Refresh</button></div>
         <p class="fine-print">Server logs include IP addresses, reported browser/device details, encrypted sizes, and timing. The browser / OS / device profile is passive and may be spoofed. Private names are automatically decrypted in this tab after sign-in.</p>
+        <p id="storage-usage" class="muted" aria-live="polite">Storage: loading…</p>
         <p id="audit-status" class="status-message" role="status" aria-live="polite"></p>
         <div id="audit-empty" class="empty-state" hidden><p>No packages.</p></div>
         <div class="table-scroll" role="region" aria-label="Transfer activity table" tabindex="0"><table id="audit-table" hidden><caption class="sr-only">Package status, timestamps, encrypted volume, recipient access, and deletion controls</caption><thead><tr><th scope="col">Package</th><th scope="col">Status</th><th scope="col">Created / expires</th><th scope="col">Encrypted size</th><th scope="col">Opened / IP</th><th scope="col"><span class="sr-only">Actions</span></th></tr></thead><tbody id="audit-body"></tbody></table></div>

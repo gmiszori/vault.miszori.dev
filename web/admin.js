@@ -58,6 +58,7 @@ function clearSession(status = '') {
   forgetLink();
   setBusy(false);
   $('audit-status').textContent = '';
+  $('storage-usage').textContent = '';
   $('workspace').hidden = true;
   $('logout').hidden = true;
   $('login-panel').hidden = false;
@@ -433,6 +434,10 @@ async function refreshList() {
     const data = await (await api('/packages')).json();
     if (sessionAuth !== authorization || session !== loginAttempt) return;
     if (!Array.isArray(data.packages)) throw new Error('The server returned an invalid package list.');
+    const storage = data.storage;
+    $('storage-usage').textContent = storage && Number.isSafeInteger(storage.usedBytes) && storage.usedBytes >= 0 && Number.isSafeInteger(storage.maxBytes) && storage.maxBytes > 0
+      ? `Storage: ${(storage.usedBytes / 1e9).toFixed(2)} GB / ${(storage.maxBytes / 1e9).toFixed(2)} GB`
+      : 'Storage: unavailable';
     auditPackages = data.packages;
     await renderList();
   } catch (error) {

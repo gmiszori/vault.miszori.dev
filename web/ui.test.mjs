@@ -191,6 +191,7 @@ test('only the checking card is visible until availability resolves, then ready 
         assert.equal(ui.$('fallback-warning').hidden, true);
         assert.equal(ui.$('consent-label').hidden, true);
         assert.equal(ui.$('download-warning').hidden, true);
+        assert.equal(ui.$('download-status').textContent, '');
       }
     } finally { ui.restore(); }
   }
@@ -430,7 +431,7 @@ test('same-document reopening strips the key, resets consent, and reports consum
     assert.equal(consumes, 1);
     assert.equal(ui.$('save-archive').hidden, true);
     assert.equal(ui.$('download-consent').checked, false);
-    assert.match(ui.$('download-status').textContent, /does not exist.*already been claimed.*expired.*deleted/);
+    assert.equal(ui.$('download-status').textContent, '');
   } finally { ui.restore(); }
 });
 
@@ -506,6 +507,22 @@ function adminFetcher(onUpload) {
     return onUpload(path, options);
   };
 }
+
+test('transfer activity displays server storage and configured quota in GB, refreshes, and clears on logout', async () => {
+  let usedBytes = 1500000000;
+  const ui = await signedInAdmin(async path => {
+    if (path.endsWith('/config')) return json({ publicOrigin: 'https://drive.example', labelKey });
+    return json({ packages: [], storage: { usedBytes, maxBytes: 100000000000 } });
+  });
+  try {
+    assert.equal(ui.$('storage-usage').textContent, 'Storage: 1.50 GB / 100.00 GB');
+    usedBytes = 0;
+    await ui.$('refresh-list').dispatch('click');
+    assert.equal(ui.$('storage-usage').textContent, 'Storage: 0.00 GB / 100.00 GB');
+    await ui.$('logout').dispatch('click');
+    assert.equal(ui.$('storage-usage').textContent, '');
+  } finally { ui.restore(); }
+});
 
 test('audit shows compact nonwrapping package IDs but preserves full IDs for titles and deletion', async () => {
   const ids = ['abcdef0123456789'.repeat(4), 'exactly12-idz', 'short-id'];

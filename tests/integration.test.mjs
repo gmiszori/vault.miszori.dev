@@ -86,6 +86,9 @@ test('Caddy isolates admin routes and supplies privacy headers', async () => {
   assert.equal((await fetch(`${admin}/package/${'0'.repeat(64)}`)).status, 200, 'VPN users can also open public package pages');
   assert.equal((await fetch(`${admin}/api/admin/packages`, { headers: auth })).status, 404);
   assert.equal((await fetch(`${admin}/admin/api/packages`)).status, 401);
+  const activity = await (await adminFetch('packages')).json();
+  assert.ok(Number.isSafeInteger(activity.storage.usedBytes) && activity.storage.usedBytes >= 0);
+  assert.equal(activity.storage.maxBytes, 107374182400);
   assert.equal((await adminFetch('packages', 'POST', '{"ttlSeconds":3600}', { Origin: 'https://evil.example' })).status, 403);
   const invalid = await fetch(`${pub}/api/packages/${'0'.repeat(64)}`); assert.equal(invalid.status, 404);
 });

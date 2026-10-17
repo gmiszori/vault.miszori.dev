@@ -8,7 +8,7 @@ Private, client-encrypted, one-time file packages. Both pages use a minimal blac
 - The public page displays a destructive-download warning. **Opening a link does not consume it**; clicking **Download and destroy** does. This avoids previews and link scanners accidentally destroying packages.
 - A package can be claimed exactly once, including during concurrent requests. The server deletes its ciphertext during/after the attempt, even if the download fails. There is no retry or recovery.
 - Unclaimed packages expire after 1 minute–30 days. The cleanup job runs every 15 seconds; expired packages are immediately unavailable even before cleanup runs.
-- Up to **20 GiB per package**, 20,000 files, and 100 active packages. Encryption/upload uses 8 MiB records, not whole-file buffers. The default aggregate ciphertext quota is 100 GiB.
+- Up to **20 GiB per package**, 20,000 files, and 100 active packages. Encryption/upload uses 8 MiB records, not whole-file buffers. The default aggregate ciphertext quota is 100 GiB. Admin Transfer activity shows quota-counted ciphertext usage and the configured `MAX_STORAGE_BYTES` limit in decimal GB (1 GB = 1,000,000,000 bytes), refreshed with the package list. Uploading, ready, and in-progress downloads count toward usage; historical consumed/failed/deleted/expired records do not. Downloads retain their quota allocation until cleanup completes. This is not total filesystem usage or free disk space.
 - Recipients download one **`.zip` archive**, preserving folder paths. ZIP64 supports files and archive offsets above 4 GiB. Entries use ZIP's uncompressed (store) method to keep large downloads streaming and avoid wasting CPU on already-compressed files. Use a current ZIP utility for very large archives.
 
 ## Network design
