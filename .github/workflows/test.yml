@@ -26,7 +26,7 @@ jobs:
       - name: Start integration stack
         run: docker compose -p drive-test -f tests/compose.yaml up --build -d --wait
       - name: Exercise Caddy and API
-        run: node --test tests/integration.test.mjs
+        run: node --test tests/*.test.mjs
       - name: Cleanup test stack
         if: always()
         run: docker compose -p drive-test -f tests/compose.yaml down -v

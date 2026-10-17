@@ -1,6 +1,6 @@
 # drive.miszori.dev
 
-Private, client-encrypted, one-time file packages. Both pages use a minimal dark interface with blue accents, branded `drive.miszori.dev`. Docker runs a small Go API and Caddy; the browser encrypts/decrypts with WebCrypto. No JavaScript frameworks, third-party scripts, analytics, database service, or build step for the web pages.
+Private, client-encrypted, one-time file packages. Both pages use a minimal black interface with blue accents, branded `drive.miszori.dev`. Docker runs a small Go API and Caddy; the browser encrypts/decrypts with WebCrypto. No JavaScript frameworks, third-party scripts, analytics, database service, or build step for the web pages.
 
 ## What it does
 
@@ -70,7 +70,29 @@ Do not run the local test stack on a production host with this network already a
 2. The browser creates a fresh encryption key, encrypts filenames and file bytes, and uploads encrypted records sequentially. Do not close the tab during upload. Failed uploads are removed when possible; interrupted uploads are discarded on server restart or expire normally.
 3. Copy the generated link and send it over a trusted channel. The key is after `#`, **not** in the request path/query. Whoever has the whole link can claim the package. The admin cannot recover a link/key after losing it; recreate the package instead.
 4. The recipient sees the warning and expiry, chooses a destination, then confirms the destructive transfer. Do not close/sleep the device during a large transfer. The page removes the fragment from the current address/history entry immediately after capturing it; the key remains only in page memory, so reloading requires reopening the original link.
-5. The admin audit lists status, opening/claim time, and the request IP. A `consumed` status means the server completed its response, **not** proof the user successfully saved, extracted, or read the archive. `failed` includes aborted downloads and interrupted uploads.
+5. The admin audit lists status, optional decrypted admin name, opening/claim time, request IP, and reported browser/OS/device type. A `consumed` status means the server completed its response, **not** proof the user successfully saved, extracted, or read the archive. `failed` includes aborted downloads and interrupted uploads.
+
+### Private package names
+
+Names are optional and **admin-only**. Unlock names with a separate strong encryption passphrase (confirm it on first use), then name packages when uploading or use each package row's name controls to rename/remove labels. Unnamed uploads work without unlocking. Do not reuse the admin login password: the server knows that password. Do not put the names passphrase in `.env` or server-side configuration. The names passphrase and derived key remain in tab memory only and are cleared on locking names, signing out, or leaving the page. Reloading requires unlocking again.
+
+The browser derives a 256-bit AES-GCM key using PBKDF2-SHA256 with **600,000 iterations** and the instance's persistent random 16-byte salt. Every name uses a fresh random 12-byte IV, a 128-bit authentication tag, and AAD `drive.miszori.dev:admin-name:v1:<package-id>`. The server stores only the version, IV, and encrypted name; it never receives the name/passphrase/key. Names are not part of the file manifest, shared link, recipient page, ZIP filename, downloaded files, or preview metadata. Names may reveal their approximate length through ciphertext size.
+
+The salt is stored in the package volume as `label-salt`; preserve it with package metadata. Changing the login password does not change the names passphrase. Losing the passphrase makes existing names unrecoverable, **not** the package contents (those use independent share-link keys). Old unnamed packages remain compatible. Names stay encrypted in historical audit records through the existing retention period.
+
+### Browser/device audit
+
+Browser and device details are inferred **only when a package is explicitly claimed**, from the request's User-Agent and supplied low-entropy client hints. There is no canvas fingerprint, extra browser script, high-entropy client-hint request, geolocation, or device identifier. Unsupported profiles show unknown values. These headers can be absent or forged; they are diagnostic reports, **not reliable proof of identity**, precise hardware model, or physical location. Raw User-Agent text is bounded and shown only to the admin. Page visits and link-preview fetches do not create an opening record.
+
+### Messaging previews
+
+Public package HTML contains server-rendered Open Graph and Twitter-card metadata with a generic title, description, and 1200×630 PNG. It never includes names, filenames, keys, package contents, recipient audit details, or even package-specific availability. Preview bots fetch only public HTML/image; those requests cannot consume the package. An explicit recipient download is still required.
+
+No canonical or `og:url` replacement is emitted, so clients can retain the **original fragment-bearing link** rather than replacing it with a URL missing the decryption key. Actual preview rendering/caching depends on the messaging app; some apps disable previews or require a new message after changes. Generic artwork may remain in third-party preview caches after package deletion.
+
+**Sharing the complete URL with a messaging provider also shares the key in the message text**, even though URL fragments are never sent in HTTP preview requests. Use a trusted/end-to-end-encrypted channel; generic previews do not make an untrusted messaging service safe. No real share link is submitted to any external preview/debugging service by this application.
+
+Preview image URLs use Caddy's configured `PUBLIC_ORIGIN` (set automatically by Compose), not request headers or private VPN addresses. Regenerate the generic artwork with `python3 tools/generate-preview.py` if needed; this development-only command requires Pillow and does not run in production.
 
 **Large-download browser requirement:** desktop Chromium (Chrome/Edge) with the File System Access API, a secure context, enough destination disk space, and a filesystem supporting files above 4 GiB (not FAT32). Browsers without that API use a strictly capped small-package memory fallback. They cannot safely handle 10–20 GiB; use desktop Chromium. Browser encryption still occurs in chunks on both paths. Folder selection includes files, but empty folders are not preserved.
 
@@ -81,16 +103,16 @@ Do not run the local test stack on a production host with this network already a
 3. Record 0 is an encrypted JSON manifest: `{version:1, files:[{path,size,lastModified}], chunkSize:8388608}`. Subsequent records contain each file's bytes, split at 8 MiB, in manifest order. Empty files need no data records.
 4. Every record uses **AES-256-GCM** with its 128-bit authentication tag. Its 96-bit IV is four zero bytes followed by the record index as an unsigned 64-bit big-endian integer. Unique indices under a fresh package key prevent IV reuse. Additional authenticated data is UTF-8 `packageID:recordIndex`; changing record order, package ID, key, or ciphertext fails authentication. Failed/ambiguous uploads are aborted rather than re-encrypted with a reused IV.
 5. The share link is `https://drive.miszori.dev/package/<256-bit-id>#<base64url-key>`. Browsers do not send fragments in HTTP requests. No key is sent to the API, stored in browser storage, or retained by the server.
-6. A POST claim atomically changes `ready` to `consuming` and persists the time/IP before returning any content. The binary response consists of repeated **4-byte big-endian ciphertext length + ciphertext** records. Each record is unlinked before it is streamed; remaining records are removed when the handler completes or fails. A crashed `consuming` package is purged at startup before serving requests. Multiple backend replicas are **not supported**: the in-process claim lock requires exactly one API instance.
+6. A POST claim atomically changes `ready` to `consuming` and persists the time/IP and passive browser profile before returning any content. The binary response consists of repeated **4-byte big-endian ciphertext length + ciphertext** records. Each record is unlinked before it is streamed; remaining records are removed when the handler completes or fails. A crashed `consuming` package is purged at startup before serving requests. Multiple backend replicas are **not supported**: the in-process claim lock requires exactly one API instance.
 7. The browser authenticates and decrypts every record and writes an uncompressed ZIP stream. CRC-32 checksums and data descriptors allow each file to be written without buffering it; ZIP64 records support sizes and offsets above 4 GiB. UTF-8 names preserve nested and Unicode paths. Only central-directory metadata is retained in memory, bounded by the manifest/file-count limits. Filename validation rejects unsafe traversal paths and duplicate names. CRC-32 is ZIP compatibility checking, not a security primitive: AES-GCM supplies authenticity. There is no trusted plaintext manifest on the server. Archive generation is entirely local, so existing encrypted packages also download as ZIP without migration.
 
-The Docker `packages` volume stores one directory per package. Its `meta.json` contains ID, state, creation/expiry/opening times, request IP, ciphertext byte/record counts, and (only during upload) the token hash. Numbered `.bin` files contain ciphertext. Temporary writes are synced and atomically renamed. Metadata is retained until 90 days after the package's expiry, then removed. It never contains original filenames, file contents, or decryption keys.
+The Docker `packages` volume stores one directory per package plus the public `label-salt` KDF salt at its root. Each package's `meta.json` contains ID, state, creation/expiry/opening times, request IP, bounded reported browser/device details, an optional encrypted-name envelope, ciphertext byte/record counts, and (only during upload) the token hash. Numbered `.bin` files contain ciphertext. Temporary writes are synced and atomically renamed. Metadata is retained until 90 days after the package's expiry, then removed. It never contains readable admin package names, original filenames, file contents, or decryption keys.
 
 ## Privacy boundaries and operational limits
 
 **Client-side encryption is not a guarantee against a compromised server.** The server supplies the JavaScript; an attacker controlling it could serve modified code to steal future keys. Protect deployment credentials and dependencies, inspect changes, keep images patched, and consider independently distributed clients if that threat must be excluded. No external security audit has been performed.
 
-- The server necessarily learns ciphertext size/record boundaries, upload/download timing, expiry, and the network request IP (which may be a VPN/NAT/proxy address, not proof of a person's identity). Size patterns may reveal rough file counts and sizes. Admin passwords exist in the API process environment and must be protected from host/Docker administrators. Docker is isolation, not protection from a malicious host administrator.
+- The server necessarily learns ciphertext size/record boundaries, upload/download timing, expiry, reported User-Agent/browser/OS/device details, and the network request IP (which may be a VPN/NAT/proxy address, not proof of a person's identity). Size patterns may reveal rough file counts and sizes. Admin passwords exist in the API process environment and must be protected from host/Docker administrators. Docker is isolation, not protection from a malicious host administrator.
 - HTTPS protects transport; AES-GCM protects stored content. The VPN and private route boundary protect administration. CSP, same-origin checks, no third-party resources, no caching, and login/public request throttles reduce exposure; none gives absolute security.
 - The share link itself is a bearer capability. Anyone receiving/stealing it can download first, and anyone who learns its package ID can deliberately consume ciphertext without knowing the key. GCM failure after a claim does not restore the package.
 - Caddy access logging is not enabled. Do not add request-body logging, analytics, external error collection, URL/key telemetry, or third-party scripts. Browser extensions, clipboard managers, messaging apps, screenshots, endpoint malware, and the recipient's saved copy are outside this application's control.
@@ -114,7 +136,10 @@ The Docker `packages` volume stores one directory per package. Its `meta.json` c
 ├── package.json          ES-module/test metadata; no browser dependencies
 ├── cmd/drive/
 │   ├── main.go           Auth, encrypted storage, atomic claims, audit, cleanup
-│   └── main_test.go      Backend lifecycle, races, auth, failure/expiry tests
+│   ├── browser.go        Bounded passive browser/device header interpretation
+│   ├── labels.go         Persistent KDF salt and encrypted-name validation
+│   ├── main_test.go      Backend lifecycle, races, auth, failure/expiry tests
+│   └── *_test.go         Browser, encrypted-label, retention and recovery tests
 ├── web/
 │   ├── index.html        Public landing/destructive-download page
 │   ├── admin.html        VPN login/upload/audit page
@@ -123,11 +148,16 @@ The Docker `packages` volume stores one directory per package. Its `meta.json` c
 │   ├── public.js         Warning, one-time download, local archive saving
 │   ├── crypto.js         Chunk encryption, manifest/path validation, framing
 │   ├── zip.js            Bounded-memory ZIP/ZIP64 archive writer
-│   └── *.test.mjs        Browser-module protocol/archive tests
+│   ├── names.js          Separate-passphrase admin-name encryption
+│   ├── share-preview.png Generic public messaging-preview artwork
+│   └── *.test.mjs        Browser-module protocol/archive/name/UI tests
+├── tools/
+│   └── generate-preview.py  Optional development-only PNG generator
 ├── tests/
 │   ├── compose.yaml      Isolated loopback-only development/test stack
 │   ├── Caddyfile         HTTP loopback test listeners (never deploy publicly)
-│   └── integration.test.mjs  Actual Caddy/API encryption/claim/large-transfer tests
+│   ├── integration.test.mjs  Actual Caddy/API encryption/claim/large-transfer tests
+│   └── metadata.test.mjs Encrypted-name privacy, browser audit and preview tests
 └── README.md             Architecture, setup, protocol, limits, verification
 ```
 
@@ -149,7 +179,7 @@ node --test web/*.test.mjs
 
 # Local stack; HTTP is safe for WebCrypto on loopback only
 docker compose -p drive-test -f tests/compose.yaml up --build -d --wait
-node --test tests/integration.test.mjs
+node --test tests/*.test.mjs
 
 # Optional real 20 GiB transfer + ZIP64 CRC validation with Python 3:
 # needs >21 GiB free Docker disk AND >21 GiB in the host temporary directory
@@ -167,14 +197,16 @@ An actual **20 GiB** package was AES-GCM encrypted, uploaded through Caddy to Do
 
 The ZIP update was additionally tested with another **actual 20 GiB** encrypted round trip written to a streaming ZIP64 archive (about 212 seconds). Python's independent ZIP reader validated every entry CRC, a file above 4 GiB, subsequent entry offsets above 4 GiB, Unicode paths, and an empty file. The generated archive and ciphertext test data were cleaned up afterward. Regular ZIP headers, exact archive sizing, backpressure, and incomplete/sink-error handling are also covered by tests. A real browser-created Unicode-file package was uploaded, downloaded as ZIP, and independently checked with Python for original contents and CRC validity. Mobile admin and download pages were checked at 390 pixels wide with no horizontal page overflow; the audit table scrolls internally.
 
+The private-metadata update passed 42 browser-module tests, nine Docker integration tests, and backend race/static checks. Browser testing verified black page/panel backgrounds, no mobile overflow, real encrypted-name upload, cleared passphrase inputs, and name removal after locking. The browser-created label was independently decrypted with Node and confirmed absent from server metadata and public HTML in plaintext. A real browser claim recorded Chrome/macOS/desktop; a Docker restart preserved the KDF salt, encrypted label, and audit. Preview bot requests returned rendered generic cards and valid PNG artwork without claiming or recording an opening.
+
 ## Maintenance
 
 ```bash
 # Update/rebuild, preserving named volumes
 docker compose pull
 docker compose up --build -d --wait
-# Rebind/reload updated Caddy routing (including the ZIP module allowlist)
+# Rebind/reload updated Caddy routing (ZIP/names modules and preview templates)
 docker compose up -d --force-recreate caddy
 ```
 
-Restarting intentionally destroys incomplete uploads and interrupted downloads. Ready packages survive until consumed/expired/deleted. `docker compose down` preserves data; `docker compose down -v` irreversibly removes packages and Caddy certificate state. Do not scale the API above one replica. Rotate the admin password by changing `.env` and recreating the API container; loaded admin tabs must log in again. Audit records are sensitive personal data: disclose IP/time collection to users and choose retention/deployment practices appropriate to your jurisdiction.
+Restarting intentionally destroys incomplete uploads and interrupted downloads. Ready packages survive until consumed/expired/deleted. `docker compose down` preserves data; `docker compose down -v` irreversibly removes packages and Caddy certificate state. Do not scale the API above one replica. Rotate the admin password by changing `.env` and recreating the API container; loaded admin tabs must log in again. Audit records are sensitive personal data: disclose IP/time and browser/device-header collection to users and choose retention/deployment practices appropriate to your jurisdiction.

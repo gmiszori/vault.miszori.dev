@@ -12,7 +12,7 @@
 		Referrer-Policy "no-referrer"
 		X-Content-Type-Options "nosniff"
 		X-Frame-Options "DENY"
-		X-Robots-Tag "noindex, nofollow, noarchive, nosnippet"
+		X-Robots-Tag "noindex, nofollow, noarchive"
 		Permissions-Policy "camera=(), microphone=(), geolocation=()"
 		Strict-Transport-Security "max-age=31536000"
 		Cache-Control "no-store"
@@ -48,9 +48,10 @@ https://{$DOMAIN} {
 	@page path / /package/*
 	handle @page {
 		rewrite * /index.html
+		templates
 		file_server
 	}
-	@assets path /styles.css /public.js /crypto.js /zip.js
+	@assets path /styles.css /public.js /crypto.js /zip.js /share-preview.png
 	handle @assets {
 		file_server
 	}
@@ -84,9 +85,10 @@ https://{$DOMAIN}:8443 {
 	}
 	handle /package/* {
 		rewrite * /index.html
+		templates
 		file_server
 	}
-	@assets path /styles.css /admin.js /public.js /crypto.js /zip.js
+	@assets path /styles.css /admin.js /public.js /crypto.js /zip.js /names.js /share-preview.png
 	handle @assets {
 		file_server
 	}

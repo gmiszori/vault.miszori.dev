@@ -26,6 +26,7 @@ services:
     restart: unless-stopped
     environment:
       DOMAIN: ${DOMAIN:-drive.miszori.dev}
+      PUBLIC_ORIGIN: https://${DOMAIN:-drive.miszori.dev}
       ACME_EMAIL: ${ACME_EMAIL:?Set ACME_EMAIL in .env}
     ports:
       - "${PUBLIC_BIND_IP:?Set the host public-facing interface IP}:80:80"

@@ -34,9 +34,10 @@
 	@page path / /package/*
 	handle @page {
 		rewrite * /index.html
+		templates
 		file_server
 	}
-	@assets path /styles.css /public.js /crypto.js /zip.js
+	@assets path /styles.css /public.js /crypto.js /zip.js /share-preview.png
 	handle @assets {
 		file_server
 	}
@@ -66,9 +67,10 @@
 	}
 	handle /package/* {
 		rewrite * /index.html
+		templates
 		file_server
 	}
-	@assets path /styles.css /admin.js /public.js /crypto.js /zip.js
+	@assets path /styles.css /admin.js /public.js /crypto.js /zip.js /names.js /share-preview.png
 	handle @assets {
 		file_server
 	}

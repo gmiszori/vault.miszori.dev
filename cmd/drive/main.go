@@ -29,15 +29,17 @@ const maxChunks = 30000
 const maxPackageBytes int64 = 20*1024*1024*1024 + maxChunks*16 + 8*1024*1024
 
 type Package struct {
-	ID        string     `json:"id"`
-	Status    string     `json:"status"`
-	CreatedAt time.Time  `json:"createdAt"`
-	ExpiresAt time.Time  `json:"expiresAt"`
-	OpenedAt  *time.Time `json:"openedAt,omitempty"`
-	OpenedIP  string     `json:"openedIp,omitempty"`
-	Chunks    int        `json:"chunks"`
-	Bytes     int64      `json:"bytes"`
-	TokenHash string     `json:"-"`
+	ID            string          `json:"id"`
+	Status        string          `json:"status"`
+	CreatedAt     time.Time       `json:"createdAt"`
+	ExpiresAt     time.Time       `json:"expiresAt"`
+	OpenedAt      *time.Time      `json:"openedAt,omitempty"`
+	OpenedIP      string          `json:"openedIp,omitempty"`
+	Chunks        int             `json:"chunks"`
+	Bytes         int64           `json:"bytes"`
+	TokenHash     string          `json:"-"`
+	EncryptedName *EncryptedName  `json:"encryptedName,omitempty"`
+	OpenedBrowser *BrowserProfile `json:"openedBrowser,omitempty"`
 }
 type diskPackage struct {
 	Package
@@ -54,6 +56,7 @@ type Server struct {
 	limits                       map[string]bucket
 	quota                        int64
 	now                          func() time.Time
+	labelKey                     LabelKey
 }
 
 func randomID() string {
@@ -151,8 +154,13 @@ func newServer(root, user, password, origin string, quota int64) (*Server, error
 		p := d.Package
 		p.TokenHash = d.TokenHash
 		s.packages[p.ID] = &p
+	}
+	if err = s.initLabelKey(); err != nil {
+		return nil, err
+	}
+	for _, p := range s.packages {
 		if p.Status == "consuming" || p.Status == "uploading" {
-			if err = s.purge(&p, "failed"); err != nil {
+			if err = s.purge(p, "failed"); err != nil {
 				return nil, err
 			}
 		}
@@ -309,7 +317,7 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 func (s *Server) admin(w http.ResponseWriter, r *http.Request) {
 	path := strings.TrimPrefix(r.URL.Path, "/api/admin/")
 	if path == "config" && r.Method == "GET" {
-		writeJSON(w, 200, map[string]string{"publicOrigin": s.origin})
+		writeJSON(w, 200, map[string]any{"publicOrigin": s.origin, "labelKey": s.labelKey})
 		return
 	}
 	s.mu.Lock()
@@ -367,6 +375,10 @@ func (s *Server) admin(w http.ResponseWriter, r *http.Request) {
 	p := s.packages[parts[1]]
 	if p == nil {
 		fail(w, 404, "Not found")
+		return
+	}
+	if len(parts) == 2 && r.Method == "PATCH" {
+		s.patchName(w, r, p)
 		return
 	}
 	if len(parts) == 2 && r.Method == "DELETE" {
@@ -474,6 +486,7 @@ func (s *Server) consume(w http.ResponseWriter, r *http.Request, id string) {
 	p.Status = "consuming"
 	p.OpenedAt = &now
 	p.OpenedIP = peerIP(r)
+	p.OpenedBrowser = browserProfile(r)
 	if err := s.save(p); err != nil {
 		p.Status = "failed"
 		_ = s.purge(p, "failed")

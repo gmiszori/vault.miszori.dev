@@ -3,6 +3,9 @@ import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import { CHUNK_SIZE, MEMORY_LIMIT, encodeKey, decodeKey, importKey, encryptChunk, decryptChunk, parseManifest, serializeManifest } from './crypto.js';
 import { archiveSize } from './zip.js';
+import { deriveNameKey, encryptName, decryptName } from './names.js';
+const labelKey = { version: 1, salt: 'AAAAAAAAAAAAAAAAAAAAAA', iterations: 600000 };
+const namePhrase = 'separate random name phrase 東京';
 
 // A minimal DOM harness exercises the real entry modules without a server or dependencies.
 class Element {
@@ -22,6 +25,7 @@ class Element {
   click() { this.clicked = true; }
   contains() { return false; }
   showModal() { this.open = true; }
+  close() { this.open = false; }
   querySelector() { return new Element(); }
 }
 let serial = 0;
@@ -319,7 +323,7 @@ function adminFetcher(onUpload) {
   return async (path, options) => {
     assert.equal(Buffer.from(options.headers.Authorization.slice(6), 'base64').toString('utf8'), 'admin-é:secret-東京');
     assert.equal(options.credentials, 'omit');
-    if (path.endsWith('/config')) return json({ publicOrigin: 'https://drive.example' });
+    if (path.endsWith('/config')) return json({ publicOrigin: 'https://drive.example', labelKey });
     if (path === '/admin/api/packages' && !options.method) return json({ packages: [] });
     return onUpload(path, options);
   };
@@ -329,7 +333,7 @@ test('audit shows compact nonwrapping package IDs but preserves full IDs for tit
   const ids = ['abcdef0123456789'.repeat(4), 'exactly12-idz', 'short-id'];
   const deleted = [];
   const ui = await signedInAdmin(async (path, options) => {
-    if (path.endsWith('/config')) return json({ publicOrigin: 'https://drive.miszori.dev' });
+    if (path.endsWith('/config')) return json({ publicOrigin: 'https://drive.miszori.dev', labelKey });
     if (options.method === 'DELETE') { deleted.push(path); return new Response(null, { status: 204 }); }
     return json({ packages: ids.map(id => ({ id, status: 'ready' })) });
   });
@@ -454,7 +458,7 @@ test('HTTP public origins work only between recognized secure-context loopback h
     ['http://localhost@drive.example', 'localhost', false],
     ['https://drive.example', 'drive.example', true]
   ]) {
-    const ui = await harness('admin', async path => String(path).endsWith('/config') ? json({ publicOrigin }) : json({ packages: [] }), { hostname });
+    const ui = await harness('admin', async path => String(path).endsWith('/config') ? json({ publicOrigin, labelKey }) : json({ packages: [] }), { hostname });
     try {
       ui.$('username').value = 'preview';
       ui.$('password').value = 'preview';
@@ -501,8 +505,9 @@ test('entrypoints use the exact brand, dark scheme, and task-focused copy', asyn
 
 test('dark palette provides readable text, blue controls and keyboard focus', async () => {
   const css = await readFile(new URL('./styles.css', import.meta.url), 'utf8');
-  const colors = Object.fromEntries([...css.matchAll(/--([a-z-]+): (#[0-9a-f]{6});/g)].map(([, name, value]) => [name, value]));
+  const colors = Object.fromEntries([...css.matchAll(/--([a-z-]+): (#[0-9a-f]{3,6});/g)].map(([, name, value]) => [name, value]));
   function luminance(color) {
+    if (color.length === 4) color = '#' + [...color.slice(1)].map(char => char + char).join('');
     const rgb = color.slice(1).match(/../g).map(hex => {
       const channel = parseInt(hex, 16) / 255;
       return channel <= 0.04045 ? channel / 12.92 : ((channel + 0.055) / 1.055) ** 2.4;
@@ -514,8 +519,9 @@ test('dark palette provides readable text, blue controls and keyboard focus', as
     return (levels[0] + 0.05) / (levels[1] + 0.05);
   }
   assert.match(css, /color-scheme: dark/);
-  assert.ok(luminance(colors.background) < 0.02);
-  assert.ok(luminance(colors.surface) < 0.02);
+  for (const name of ['background', 'surface', 'input']) assert.equal(colors[name], '#000');
+  assert.equal(colors.text, '#fff');
+  for (const name of ['muted', 'line', 'warning', 'danger', 'success']) assert.match(colors[name], /^#([a-f0-9])\1{2}(?:\1{3})?$/);
   for (const name of ['text', 'muted', 'danger', 'warning', 'success', 'focus']) {
     assert.ok(contrast(colors[name], colors.surface) >= 4.5, `${name} has readable contrast`);
   }
@@ -553,4 +559,224 @@ test('HTML entrypoints reference only the agreed self-hosted assets and contain 
     const allowed = new Set(['/styles.css', '/public.js', '/admin.js', '/', '/admin/', '#main']);
     for (const reference of references) assert.ok(allowed.has(reference), `Allowed asset or navigation: ${reference}`);
   }
+});
+
+async function unlockAdminNames(ui, phrase = namePhrase, confirmation = phrase) {
+  ui.$('names-passphrase').value = phrase;
+  ui.$('names-confirm').value = confirmation;
+  const pending = ui.$('names-form').dispatch('submit');
+  assert.equal(ui.$('names-passphrase').value, '', 'passphrase cleared immediately');
+  assert.equal(ui.$('names-confirm').value, '');
+  await pending;
+}
+
+test('names unlock independently, upload PATCH precedes chunks, and secrets never enter requests or manifest', async () => {
+  const calls = [];
+  const ui = await signedInAdmin(adminFetcher(async (path, options) => {
+    calls.push([path, options]);
+    assert.ok(!JSON.stringify([path, options]).includes(namePhrase));
+    assert.ok(!JSON.stringify([path, options]).includes('Private label 東京'));
+    if (path.endsWith('/packages') && options.method === 'POST') return json({ id: 'pkg-123', uploadToken: 'token', expiresAt: '2099-01-01T00:00:00Z' });
+    return new Response(null, { status: 204 });
+  }));
+  try {
+    assert.equal(ui.$('package-name').disabled, true);
+    await unlockAdminNames(ui, namePhrase, 'different confirmation');
+    assert.match(ui.$('names-status').textContent, /same new passphrase twice/);
+    assert.equal(ui.$('package-name').disabled, true);
+    await unlockAdminNames(ui);
+    assert.equal(ui.$('package-name').disabled, false);
+    ui.$('package-name').value = 'Private label 東京';
+    ui.$('file-input').files = [new File(['hello'], 'hello.txt', { lastModified: 0 })];
+    await ui.$('file-input').dispatch('change');
+    await ui.$('upload-button').dispatch('click');
+    assert.deepEqual(calls.map(([, options]) => options.method), ['POST', 'PATCH', 'PUT', 'PUT', 'POST']);
+    const patch = JSON.parse(calls[1][1].body);
+    assert.deepEqual(Object.keys(patch), ['encryptedName']);
+    const key = await deriveNameKey(namePhrase, labelKey);
+    assert.equal(await decryptName(key, 'pkg-123', patch.encryptedName), 'Private label 東京');
+    const fileKey = await importKey(decodeKey(ui.$('share-link').value.split('#')[1]));
+    const manifest = await decryptChunk(fileKey, 'pkg-123', 0, calls[2][1].body);
+    assert.ok(!new TextDecoder().decode(manifest).includes('Private label'));
+    assert.ok(!ui.$('share-link').value.includes('Private'));
+    assert.equal(ui.$('package-name').value, '');
+  } finally { ui.restore(); }
+});
+
+test('wrong passphrases cannot unlock or rename existing labels; mixed historic keys warn without replacement', async () => {
+  const key = await deriveNameKey(namePhrase, labelKey);
+  const otherKey = await deriveNameKey('a different historic passphrase', labelKey);
+  const packages = [
+    { id: 'pkg-123', status: 'consumed', encryptedName: await encryptName(key, 'pkg-123', '<private name>') },
+    { id: 'historic', status: 'deleted', encryptedName: await encryptName(otherKey, 'historic', 'historic secret') }
+  ];
+  const patches = [];
+  const ui = await signedInAdmin(async (path, options) => {
+    assert.ok(!JSON.stringify([path, options]).includes(namePhrase));
+    if (path.endsWith('/config')) return json({ publicOrigin: 'https://drive.example', labelKey });
+    if (options.method === 'PATCH') { patches.push(JSON.parse(options.body)); return new Response(null, { status: 204 }); }
+    return json({ packages });
+  });
+  const label = index => ui.$('audit-body').children[index].children[0].children[0].textContent;
+  try {
+    assert.equal(label(0), 'Locked name');
+    await unlockAdminNames(ui, 'wrong but sufficiently long phrase');
+    assert.match(ui.$('names-status').textContent, /could not unlock/);
+    assert.equal(label(0), 'Locked name');
+    assert.equal(ui.$('package-name').disabled, true);
+    assert.equal(patches.length, 0);
+    await unlockAdminNames(ui);
+    assert.equal(label(0), '<private name>');
+    assert.equal(label(1), 'Locked name');
+    assert.match(ui.$('names-status').textContent, /historic name/);
+    const nameButton = ui.$('audit-body').children[0].children[5].children.at(-1);
+    assert.equal(nameButton.textContent, 'Name');
+    await nameButton.dispatch('click');
+    ui.$('rename-name').value = 'New label';
+    await ui.$('rename-form').dispatch('submit');
+    assert.equal(await decryptName(key, 'pkg-123', patches[0].encryptedName), 'New label');
+    await nameButton.dispatch('click');
+    await ui.$('rename-form').dispatch('submit');
+    assert.deepEqual(patches[1], { encryptedName: null });
+    await ui.$('lock-names').dispatch('click');
+    assert.equal(label(0), 'Locked name');
+    assert.equal(ui.$('rename-name').value, '');
+    assert.equal(ui.$('package-name').disabled, true);
+  } finally { ui.restore(); }
+});
+
+test('locking, signout and pagehide erase plaintext and reject late audit and unlock work', async () => {
+  const key = await deriveNameKey(namePhrase, labelKey);
+  const packages = [{ id: 'pkg-123', encryptedName: await encryptName(key, 'pkg-123', 'Only in memory') }];
+  let defer = false;
+  let release;
+  const ui = await signedInAdmin(async path => {
+    if (path.endsWith('/config')) return json({ publicOrigin: 'https://drive.example', labelKey });
+    if (defer) return new Promise(resolve => { release = () => resolve(json({ packages })); });
+    return json({ packages });
+  });
+  try {
+    await unlockAdminNames(ui);
+    assert.equal(ui.$('audit-body').children[0].children[0].children[0].textContent, 'Only in memory');
+    defer = true;
+    const refresh = ui.$('refresh-list').dispatch('click');
+    await until(() => release);
+    ui.$('package-name').value = 'Draft secret';
+    await ui.$('lock-names').dispatch('click');
+    assert.equal(ui.$('package-name').value, '');
+    assert.equal(ui.$('audit-body').children[0].children[0].children[0].textContent, 'Locked name');
+    release(); await refresh;
+    assert.equal(ui.$('audit-body').children[0].children[0].children[0].textContent, 'Locked name');
+    defer = false;
+    await unlockAdminNames(ui);
+    ui.$('package-name').value = 'Draft secret';
+    ui.$('names-passphrase').value = namePhrase;
+    await ui.$('logout').dispatch('click');
+    assert.equal(ui.$('package-name').value, '');
+    assert.equal(ui.$('names-passphrase').value, '');
+    assert.equal(ui.$('audit-body').children.length, 0);
+    ui.$('username').value = 'admin-é'; ui.$('password').value = 'secret-東京';
+    await ui.$('login-form').dispatch('submit');
+    ui.$('names-passphrase').value = namePhrase;
+    const unlocking = ui.$('names-form').dispatch('submit');
+    await ui.win.dispatch('pagehide');
+    await unlocking;
+    assert.equal(ui.$('package-name').disabled, true);
+    assert.equal(ui.$('audit-body').children.length, 0);
+    assert.equal(ui.$('names-passphrase').value, '');
+    assert.equal(ui.$('workspace').hidden, true);
+  } finally { ui.restore(); }
+});
+
+test('failed encrypted name PATCH aborts and deletes before any file upload', async () => {
+  const methods = [];
+  const ui = await signedInAdmin(adminFetcher(async (path, options) => {
+    methods.push(options.method);
+    if (options.method === 'POST') return json({ id: 'pkg-123', uploadToken: 'token', expiresAt: '2099-01-01T00:00:00Z' });
+    if (options.method === 'PATCH') return new Response(null, { status: 500 });
+    return new Response(null, { status: 204 });
+  }));
+  try {
+    await unlockAdminNames(ui);
+    ui.$('package-name').value = 'Private name';
+    ui.$('file-input').files = [new File(['hello'], 'hello.txt', { lastModified: 0 })];
+    await ui.$('file-input').dispatch('change');
+    await ui.$('upload-button').dispatch('click');
+    assert.deepEqual(methods, ['POST', 'PATCH', 'DELETE']);
+    assert.equal(ui.$('result-panel').hidden, true);
+    assert.match(ui.$('upload-status').textContent, /server package was deleted/);
+  } finally { ui.restore(); }
+});
+
+test('passive recipient profile uses safe text nodes and old records show a dash', async () => {
+  const hostile = '<img src=x onerror=alert(1)>';
+  const ui = await signedInAdmin(async path => path.endsWith('/config') ? json({ publicOrigin: 'https://drive.example', labelKey }) : json({ packages: [
+    { id: 'pkg', openedAt: '2026-01-01T00:00:00Z', openedIp: '192.0.2.1', openedBrowser: { browser: hostile, os: 'Windows', deviceType: 'desktop', userAgent: hostile } }, { id: 'old' }
+  ] }));
+  try {
+    const profile = ui.$('audit-body').children[0].children[4].children[2];
+    assert.equal(profile.textContent, `${hostile} / Windows / desktop`);
+    assert.equal(profile.title, hostile);
+    assert.equal(profile.children.length, 0);
+    assert.equal(ui.$('audit-body').children[1].children[4].children[2].textContent, '—');
+    const admin = await readFile(new URL('./admin.js', import.meta.url), 'utf8');
+    assert.doesNotMatch(admin, /innerHTML|localStorage|sessionStorage|sendBeacon/);
+    const html = await readFile(new URL('./admin.html', import.meta.url), 'utf8');
+    assert.match(html, /Server logs include IP addresses, reported browser\/device details, encrypted sizes, and timing/);
+    assert.match(html, /passive and may be spoofed/);
+    assert.match(html, /id="names-passphrase"[^>]*autocomplete="off"/);
+  } finally { ui.restore(); }
+});
+
+test('late decryption cannot reinsert plaintext after lock, and detached labels are scrubbed', async () => {
+  const key = await deriveNameKey(namePhrase, labelKey);
+  const packages = [{ id: 'pkg-123', encryptedName: await encryptName(key, 'pkg-123', 'Sensitive label') }];
+  const ui = await signedInAdmin(async path => path.endsWith('/config') ? json({ publicOrigin: 'https://drive.example', labelKey }) : json({ packages }));
+  const originalDecrypt = crypto.subtle.decrypt;
+  let release;
+  try {
+    await unlockAdminNames(ui);
+    const oldLabel = ui.$('audit-body').children[0].children[0].children[0];
+    assert.equal(oldLabel.textContent, 'Sensitive label');
+    crypto.subtle.decrypt = function (...args) {
+      return new Promise((resolve, reject) => { release = () => originalDecrypt.apply(this, args).then(resolve, reject); });
+    };
+    const refresh = ui.$('refresh-list').dispatch('click');
+    await until(() => release);
+    await ui.$('lock-names').dispatch('click');
+    assert.equal(oldLabel.textContent, 'Locked name');
+    release();
+    await refresh;
+    assert.equal(ui.$('audit-body').children[0].children[0].children[0].textContent, 'Locked name');
+    assert.equal(ui.$('package-name').disabled, true);
+  } finally { crypto.subtle.decrypt = originalDecrypt; ui.restore(); }
+});
+
+test('name unlock rejects the UTF-8 admin password including colons without additional requests', async () => {
+  const password = 'admin:password:東京-strong-long';
+  let requests = 0;
+  const ui = await harness('admin', async (path, options) => {
+    ++requests;
+    assert.equal(Buffer.from(options.headers.Authorization.slice(6), 'base64').toString('utf8'), `admin-é:${password}`);
+    return path.endsWith('/config') ? json({ publicOrigin: 'https://drive.example', labelKey }) : json({ packages: [] });
+  });
+  try {
+    ui.$('username').value = 'admin-é';
+    ui.$('password').value = password;
+    await ui.$('login-form').dispatch('submit');
+    assert.equal(ui.$('workspace').hidden, false);
+    assert.equal(requests, 2);
+    await unlockAdminNames(ui, password);
+    assert.match(ui.$('names-status').textContent, /different name passphrase, not the admin access password/);
+    assert.equal(ui.$('package-name').disabled, true);
+    assert.equal(ui.$('names-form').hidden, false);
+    assert.equal(ui.$('lock-names').hidden, true);
+    assert.equal(requests, 2, 'reused credential is rejected before fetching or saving names');
+    await unlockAdminNames(ui);
+    assert.equal(ui.$('package-name').disabled, false);
+    assert.equal(requests, 3);
+    const html = await readFile(new URL('./admin.html', import.meta.url), 'utf8');
+    assert.match(html, /strong random passphrase different from the admin access password/);
+    assert.match(html, /package names become unrecoverable, but file decryption using the share link is unaffected/);
+  } finally { ui.restore(); }
 });
