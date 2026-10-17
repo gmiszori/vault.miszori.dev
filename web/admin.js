@@ -26,7 +26,7 @@ async function api(path, options = {}) {
   if (!response.ok) {
     await response.body?.cancel();
     const errors = {
-      401: 'Sign-in failed or credentials are no longer valid. Lock the workspace and sign in again.',
+      401: 'Sign-in failed or credentials are no longer valid. Sign out and sign in again.',
       403: 'Access denied. Connect to the private VPN and check your credentials.',
       404: 'This package no longer exists.',
       409: 'Package state changed, or this record already exists. Uploads cannot be retried.',
@@ -55,7 +55,7 @@ async function login(event) {
     return;
   }
   $('login-button').disabled = true;
-  message('login-status', 'Opening your private workspace…');
+  message('login-status', 'Signing in…');
   const raw = new TextEncoder().encode(`${username}:${password}`);
   authorization = `Basic ${btoa(String.fromCharCode(...raw))}`;
   raw.fill(0);
@@ -210,7 +210,7 @@ async function upload() {
     $('share-link').value = `${publicOrigin}/package/${currentPackage}#${encodeKey(rawKey)}`;
     $('link-expiry').textContent = `Expires ${new Date(created.expiresAt).toLocaleString()}, or immediately after it is claimed.`;
     $('result-panel').hidden = false;
-    message('upload-status', 'Encrypted, uploaded, and ready. Copy the private link on the right.');
+    message('upload-status', 'Encrypted, uploaded, and ready. Copy the share link below.');
     selected = [];
     completed = true;
     $('copy-link').focus();
@@ -273,7 +273,10 @@ async function refreshList() {
     const statuses = new Set(['uploading', 'ready', 'consuming', 'consumed', 'expired', 'deleted', 'failed']);
     for (const item of [...data.packages].sort((a, b) => (Date.parse(b.createdAt) || 0) - (Date.parse(a.createdAt) || 0))) {
       const row = document.createElement('tr');
-      cell(row, String(item.id)).className = 'package-id';
+      const id = String(item.id);
+      const packageCell = cell(row, id.length > 12 ? `${id.slice(0, 12)}…` : id);
+      packageCell.className = 'package-id';
+      packageCell.title = id;
       const state = document.createElement('span');
       const knownStatus = statuses.has(item.status) ? item.status : 'unknown';
       state.className = `status-badge status-${knownStatus}`;
@@ -344,7 +347,7 @@ $('logout').addEventListener('click', () => {
   $('workspace').hidden = true;
   $('logout').hidden = true;
   $('username').focus();
-  message('login-status', 'Workspace locked. Credentials and the private link were forgotten.');
+  message('login-status', 'Signed out. Credentials and the share link were forgotten.');
   message('upload-status', '');
 });
 for (const id of ['file-input', 'folder-input']) $(id).addEventListener('change', event => {

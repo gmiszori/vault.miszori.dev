@@ -1,6 +1,14 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { randomBytes, webcrypto } from 'node:crypto';
+import { mkdtemp, open, rm, stat } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { execFile } from 'node:child_process';
+import { promisify } from 'node:util';
+import { ZipWriter, archiveSize } from '../web/zip.js';
+
+const execute = promisify(execFile);
 
 const pub = process.env.TEST_PUBLIC_URL || 'http://localhost:18080';
 const admin = process.env.TEST_ADMIN_URL || 'http://localhost:18081';
@@ -51,6 +59,9 @@ test('Caddy isolates admin routes and supplies privacy headers', async () => {
     const r = await fetch(pub + path, { headers: auth }); assert.equal(r.status, 404, path);
   }
   const home = await fetch(pub); assert.equal(home.status, 200);
+  assert.equal((await fetch(`${pub}/zip.js`)).status, 200);
+  assert.equal((await fetch(`${admin}/zip.js`)).status, 200);
+  assert.equal((await fetch(`${pub}/tar.js`)).status, 404);
   assert.match(home.headers.get('content-security-policy'), /frame-ancestors 'none'/);
   assert.equal(home.headers.get('referrer-policy'), 'no-referrer');
   assert.equal((await fetch(`${admin}/admin`)).status, 200);
@@ -123,18 +134,81 @@ test('real expiry makes a package unavailable and the background worker deletes 
   assert.equal(status, 'expired', 'cleanup worker must persist completed deletion');
 });
 
-test('optional large transfer remains streaming', { skip: !process.env.LARGE_TEST_MIB }, async () => {
+test('optional large transfer produces a native-compatible streaming ZIP64 archive', { skip: !process.env.LARGE_TEST_MIB }, async () => {
   const mib = Number(process.env.LARGE_TEST_MIB); assert.ok(Number.isInteger(mib) && mib > 0 && mib <= 20480);
-  const p = await create(86400); const key = await webcrypto.subtle.generateKey({ name: 'AES-GCM', length: 256 }, false, ['encrypt', 'decrypt']);
-  const data = randomBytes(chunkSize); let left = mib * 1024 * 1024; let count = 0;
-  const meta = new TextEncoder().encode(JSON.stringify({ version: 1, chunkSize, files: [{ path: 'large.bin', size: left, lastModified: 0 }] }));
-  await upload(p, count, new Uint8Array(await webcrypto.subtle.encrypt(parameters(p.id, count++), key, meta)));
-  while (left) { const part = data.subarray(0, Math.min(left, chunkSize)); const n = count++; await upload(p, n, new Uint8Array(await webcrypto.subtle.encrypt(parameters(p.id, n), key, part))); left -= part.length; }
-  await finalize(p, count);
-  let n = 0; let bytes = 0;
-  for await (const encrypted of records(await fetch(`${pub}/api/packages/${p.id}/consume`, { method: 'POST' }))) {
-    const decoded = new Uint8Array(await webcrypto.subtle.decrypt(parameters(p.id, n), key, encrypted));
-    if (n > 0) { assert.deepEqual(Buffer.from(decoded), data.subarray(0, decoded.length)); bytes += decoded.length; } n++;
+  const directory = await mkdtemp(join(tmpdir(), 'drive-zip-test-'));
+  const filename = join(directory, 'package.zip');
+  let p;
+  let handle;
+  try {
+    p = await create(86400);
+    const key = await webcrypto.subtle.generateKey({ name: 'AES-GCM', length: 256 }, false, ['encrypt', 'decrypt']);
+    const data = randomBytes(chunkSize);
+    const marker = Buffer.from('Nested ZIP64 marker: 世界\n');
+    const files = [
+      { path: 'large.bin', size: mib * 1024 * 1024 - marker.length, lastModified: 1720000000000 },
+      { path: 'nested/世界.txt', size: marker.length, lastModified: 1720000000000 },
+      { path: 'empty.txt', size: 0, lastModified: 0 }
+    ];
+    let count = 0;
+    const meta = new TextEncoder().encode(JSON.stringify({ version: 1, chunkSize, files }));
+    await upload(p, count, new Uint8Array(await webcrypto.subtle.encrypt(parameters(p.id, count++), key, meta)));
+    for (const [index, file] of files.entries()) {
+      let left = file.size;
+      while (left) {
+        const part = (index === 0 ? data : marker).subarray(0, Math.min(left, chunkSize));
+        const n = count++;
+        await upload(p, n, new Uint8Array(await webcrypto.subtle.encrypt(parameters(p.id, n), key, part)));
+        left -= part.length;
+      }
+    }
+    await finalize(p, count);
+    handle = await open(filename, 'w');
+    const zip = new ZipWriter({ async write(bytes) { await handle.writeFile(bytes); }, async close() { await handle.close(); handle = null; } });
+    const response = await fetch(`${pub}/api/packages/${p.id}/consume`, { method: 'POST' });
+    const framed = records(response)[Symbol.asyncIterator]();
+    const nextPlain = async index => {
+      const frame = await framed.next(); assert.equal(frame.done, false);
+      return new Uint8Array(await webcrypto.subtle.decrypt(parameters(p.id, index), key, frame.value));
+    };
+    assert.deepEqual(JSON.parse(new TextDecoder().decode(await nextPlain(0))).files, files);
+    let n = 1; let bytes = 0;
+    for (const [index, file] of files.entries()) {
+      await zip.startFile(file);
+      for (let left = file.size; left > 0;) {
+        const decoded = await nextPlain(n++);
+        assert.equal(decoded.length, Math.min(left, chunkSize));
+        assert.deepEqual(Buffer.from(decoded), (index === 0 ? data : marker).subarray(0, decoded.length));
+        await zip.write(decoded); left -= decoded.length; bytes += decoded.length;
+      }
+      await zip.endFile();
+    }
+    assert.equal((await framed.next()).done, true);
+    await zip.close();
+    assert.equal(bytes, mib * 1024 * 1024); assert.equal(n, count);
+    assert.equal((await stat(filename)).size, archiveSize(files));
+    const verification = await execute('python3', ['-c', `
+import sys, zipfile
+with zipfile.ZipFile(sys.argv[1]) as archive:
+    entries = archive.infolist()
+    assert [f.filename for f in entries] == ['large.bin', 'nested/世界.txt', 'empty.txt']
+    assert sum(f.file_size for f in entries) == int(sys.argv[2])
+    assert all(f.compress_type == zipfile.ZIP_STORED for f in entries)
+    if int(sys.argv[2]) > 0xffffffff:
+        assert entries[0].file_size > 0xffffffff
+        assert entries[1].header_offset > 0xffffffff
+    assert archive.read('nested/世界.txt') == 'Nested ZIP64 marker: 世界\\n'.encode()
+    assert archive.read('empty.txt') == b''
+    assert archive.testzip() is None
+print('Native Python ZIP reader verified every entry CRC, ZIP64 sizes/offsets, Unicode, and empty files')
+`, filename, String(bytes)]);
+    console.log(verification.stdout.trim());
+  } finally {
+    try {
+      await handle?.close();
+      if (p) await adminFetch(`packages/${p.id}`, 'DELETE');
+    } finally {
+      await rm(directory, { recursive: true, force: true });
+    }
   }
-  assert.equal(bytes, mib * 1024 * 1024); assert.equal(n, count);
 });

@@ -4,44 +4,61 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="referrer" content="no-referrer">
-  <meta name="color-scheme" content="light">
+  <meta name="color-scheme" content="dark">
   <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self'; connect-src 'self'; img-src 'self'; font-src 'none'; object-src 'none'; base-uri 'none'; form-action 'none'">
-  <title>Drive — Transfer workspace</title>
+  <title>drive.miszori.dev</title>
   <link rel="stylesheet" href="/styles.css">
   <script type="module" src="/admin.js"></script>
 </head>
 <body class="admin-body">
   <a class="skip-link" href="#main">Skip to content</a>
-  <header class="admin-header"><a class="brand" href="/admin/" aria-label="Drive workspace"><span class="brand-mark" aria-hidden="true">d<span>↗</span></span>drive<span class="brand-period">.</span></a><span class="workspace-tag">TRANSFER WORKSPACE</span><button id="logout" class="button quiet small" type="button" hidden>Lock workspace <span aria-hidden="true">↗</span></button></header>
+  <header class="admin-header"><a class="brand" href="/admin/">drive.miszori.dev</a><button id="logout" class="button quiet small" type="button" hidden>Sign out</button></header>
   <main id="main" class="admin-main">
-    <section id="login-panel" class="login-panel" aria-labelledby="login-title">
-      <span class="pill">PRIVATE WORKSPACE</span><h1 id="login-title">Good to see you.</h1><p>Sign in to send something that won’t stick around.</p>
-      <form id="login-form"><label for="username">Username</label><input id="username" name="username" autocomplete="username" required maxlength="512"><label for="password">Password</label><input id="password" name="password" type="password" autocomplete="current-password" required maxlength="4096"><button id="login-button" class="button primary full-width" type="submit">Unlock workspace <span aria-hidden="true">↗</span></button></form>
-      <p id="login-status" class="status-message" role="status" aria-live="polite"></p><p class="fine-print">Credentials stay in this tab’s memory only. This HTTPS workspace is available exclusively over the private VPN.</p>
+    <section id="login-panel" class="login-panel panel" aria-labelledby="login-title">
+      <h1 id="login-title">Admin sign in</h1>
+      <form id="login-form">
+        <label for="username">Username</label><input id="username" name="username" autocomplete="username" required maxlength="512">
+        <label for="password">Password</label><input id="password" name="password" type="password" autocomplete="current-password" required maxlength="4096">
+        <button id="login-button" class="button primary full-width" type="submit">Sign in</button>
+      </form>
+      <p id="login-status" class="status-message" role="status" aria-live="polite"></p>
+      <p class="fine-print">Requires the private VPN and HTTPS. Credentials remain in this tab only.</p>
       <p id="crypto-warning" class="notice warning" hidden>Browser encryption is unavailable. Open the HTTPS admin address over the private VPN in a browser with Web Crypto support.</p>
     </section>
     <div id="workspace" hidden>
-      <section class="workspace-heading"><div><p class="eyebrow">YOUR PRIVATE OUTBOX</p><h1>Send it. Then let it go.</h1><p>A secure handoff, without the digital leftovers.</p></div><span class="workspace-badge"><span class="status-dot" aria-hidden="true"></span>Browser-side encryption</span></section>
-      <div class="workspace-grid">
-        <section class="panel composer" aria-labelledby="compose-title">
-          <div class="panel-heading"><h2 id="compose-title">New transfer</h2><span class="muted">01 — ENCRYPT & SEND</span></div>
-          <div id="drop-zone" class="drop-zone"><div class="upload-symbol" aria-hidden="true">↑</div><h3>A safe place to drop your files.</h3><p>Drag files here, or choose what to send.</p><div class="file-actions"><label class="button primary small file-picker">Choose files<input id="file-input" type="file" multiple></label><label class="button quiet small file-picker">Choose folder<input id="folder-input" type="file" webkitdirectory multiple></label></div><span class="fine-print">Up to 20 GiB · 20,000 files · Nothing leaves unencrypted<br>Folders include files only; empty folders are not preserved.</span></div>
-          <div id="selection" class="selection" hidden><div class="selection-heading"><strong id="selection-summary"></strong><button id="clear-files" class="text-button" type="button">Clear</button></div><ul id="file-list" class="file-list" aria-label="Selected files"></ul></div>
-          <div class="field-row"><div><label for="ttl">Link expires after</label><select id="ttl"><option value="3600">1 hour</option><option value="86400" selected>24 hours</option><option value="259200">3 days</option><option value="604800">7 days</option><option value="2592000">30 days</option><option value="custom">Custom duration</option></select></div><div id="custom-ttl-field" hidden><label for="custom-ttl">Minutes (1–43,200)</label><input id="custom-ttl" type="number" min="1" max="43200" step="1" value="60"></div></div>
-          <p class="fine-print">Expiry starts when the package is created, including upload time. Allow extra time for large transfers.</p>
-          <button id="upload-button" class="button primary full-width" type="button" disabled><span>Encrypt & create link</span><span aria-hidden="true">↗</span></button>
-          <div id="upload-progress" class="progress-area" hidden><div class="progress-copy"><span id="upload-stage">Preparing…</span><span id="upload-percent">0%</span></div><progress id="upload-meter" value="0" max="100" aria-label="Upload progress"></progress><button id="abort-upload" class="text-button danger" type="button">Cancel & delete upload</button></div>
-          <p id="upload-status" class="status-message" role="status" aria-live="polite"></p>
-        </section>
-        <aside class="composer-aside">
-          <section id="result-panel" class="result-panel" aria-labelledby="result-title" hidden><span class="pill">READY TO GO</span><h2 id="result-title">One link.<br>One download.</h2><p>Share the complete link through a trusted channel. The part after # is the decryption key.</p><label for="share-link">Your private download link</label><input id="share-link" type="text" readonly spellcheck="false" autocomplete="off"><button id="copy-link" class="button primary full-width" type="button">Copy private link <span aria-hidden="true">↗</span></button><p id="copy-status" class="status-message" role="status"></p><p id="link-expiry" class="fine-print"></p><button id="hide-link" class="text-button" type="button">Forget link in this tab</button><p class="fine-print">This key is not saved. Closing or locking this tab means this link cannot be recovered.</p></section>
-          <section class="privacy-panel"><span class="privacy-symbol" aria-hidden="true">✳</span><h2>Good things<br>come and go.</h2><p>Every package gets a fresh 256-bit key. File names and contents are encrypted with AES-GCM right here, before upload.</p><div class="aside-divider"></div><p class="fine-print">The server sees IP addresses, encrypted sizes, and timing. It never receives the key or file names.</p><p class="fine-print">Transfers are one-time. After a claim starts, a cancellation or connection failure cannot be undone. Ask recipients to use desktop Chrome or Edge for large packages.</p></section>
-        </aside>
-      </div>
-      <section class="panel audit-panel" aria-labelledby="audit-title"><div class="panel-heading"><div><h2 id="audit-title">Transfer activity</h2><p class="muted">The metadata. Never the contents.</p></div><button id="refresh-list" class="button quiet small" type="button">Refresh <span aria-hidden="true">↻</span></button></div><p id="audit-status" class="status-message" role="status" aria-live="polite"></p><div id="audit-empty" class="empty-state" hidden><span aria-hidden="true">↗</span><h3>A clean slate.</h3><p>Your transfers will appear here. Create your first one above.</p></div><div class="table-scroll"><table id="audit-table" hidden><caption class="sr-only">Package status, timestamps, encrypted volume, recipient access, and deletion controls</caption><thead><tr><th scope="col">Package</th><th scope="col">Status</th><th scope="col">Created / expires</th><th scope="col">Encrypted size</th><th scope="col">Opened / IP</th><th scope="col"><span class="sr-only">Actions</span></th></tr></thead><tbody id="audit-body"></tbody></table></div></section>
+      <section class="panel composer" aria-labelledby="compose-title">
+        <h1 id="compose-title">Upload files</h1>
+        <div id="drop-zone" class="drop-zone">
+          <p>Drop files here or choose files or a folder.</p>
+          <div class="file-actions"><label class="button primary small file-picker">Choose files<input id="file-input" type="file" multiple></label><label class="button quiet small file-picker">Choose folder<input id="folder-input" type="file" webkitdirectory multiple></label></div>
+          <p class="fine-print">Up to 20 GiB · 20,000 files. Empty folders are not included.</p>
+        </div>
+        <div id="selection" class="selection" hidden><div class="selection-heading"><strong id="selection-summary"></strong><button id="clear-files" class="text-button" type="button">Clear</button></div><ul id="file-list" class="file-list" aria-label="Selected files"></ul></div>
+        <div class="field-row"><div><label for="ttl">Expires after</label><select id="ttl"><option value="3600">1 hour</option><option value="86400" selected>24 hours</option><option value="259200">3 days</option><option value="604800">7 days</option><option value="2592000">30 days</option><option value="custom">Custom duration</option></select></div><div id="custom-ttl-field" hidden><label for="custom-ttl">Minutes (1–43,200)</label><input id="custom-ttl" type="number" min="1" max="43200" step="1" value="60"></div></div>
+        <p class="fine-print">Expiry starts at package creation and includes upload time.</p>
+        <div class="notice warning"><p>One-time download: starting a transfer destroys the server copy, even if it fails or is cancelled. Recipients need desktop Chrome or Edge for large downloads; other browsers are limited to 128 MiB ZIP archives.</p></div>
+        <button id="upload-button" class="button primary full-width" type="button" disabled>Encrypt and create link</button>
+        <div id="upload-progress" class="progress-area" hidden><div class="progress-copy"><span id="upload-stage">Preparing…</span><span id="upload-percent">0%</span></div><progress id="upload-meter" value="0" max="100" aria-label="Upload progress"></progress><button id="abort-upload" class="text-button danger" type="button">Cancel and delete upload</button></div>
+        <p id="upload-status" class="status-message" role="status" aria-live="polite"></p>
+      </section>
+      <section id="result-panel" class="panel result-panel" aria-labelledby="result-title" hidden>
+        <h2 id="result-title">Share link</h2>
+        <p>Share the complete link through a trusted channel. The part after # is the decryption key.</p>
+        <label for="share-link">Download link</label><input id="share-link" type="text" readonly spellcheck="false" autocomplete="off">
+        <button id="copy-link" class="button primary full-width" type="button">Copy link</button>
+        <p id="copy-status" class="status-message" role="status" aria-live="polite"></p><p id="link-expiry" class="fine-print"></p>
+        <p class="notice warning">The key is not saved and cannot be recovered. Copy the link before closing this tab or signing out.</p>
+        <button id="hide-link" class="text-button" type="button">Forget link in this tab</button>
+      </section>
+      <section class="panel audit-panel" aria-labelledby="audit-title">
+        <div class="panel-heading"><h2 id="audit-title">Transfer activity</h2><button id="refresh-list" class="button quiet small" type="button">Refresh</button></div>
+        <p class="fine-print">Server logs include IP addresses, encrypted sizes, and timing.</p>
+        <p id="audit-status" class="status-message" role="status" aria-live="polite"></p>
+        <div id="audit-empty" class="empty-state" hidden><p>No packages.</p></div>
+        <div class="table-scroll" role="region" aria-label="Transfer activity table" tabindex="0"><table id="audit-table" hidden><caption class="sr-only">Package status, timestamps, encrypted volume, recipient access, and deletion controls</caption><thead><tr><th scope="col">Package</th><th scope="col">Status</th><th scope="col">Created / expires</th><th scope="col">Encrypted size</th><th scope="col">Opened / IP</th><th scope="col"><span class="sr-only">Actions</span></th></tr></thead><tbody id="audit-body"></tbody></table></div>
+      </section>
     </div>
   </main>
-  <footer class="admin-footer"><span>drive. / less is secure.</span><span>Keys live in memory. Files don’t live here forever.</span></footer>
-  <dialog id="delete-dialog"><form method="dialog"><span class="pill">PERMANENT ACTION</span><h2>Delete this package?</h2><p id="delete-description"></p><p>The link will stop working. This cannot be undone.</p><div class="dialog-actions"><button class="button quiet" value="cancel">Keep package</button><button id="confirm-delete" class="button destructive" value="confirm">Delete package</button></div></form></dialog>
+  <dialog id="delete-dialog"><form method="dialog"><h2>Delete this package?</h2><p id="delete-description"></p><p>The link will stop working. This cannot be undone.</p><div class="dialog-actions"><button class="button quiet" value="cancel">Keep package</button><button id="confirm-delete" class="button destructive" value="confirm">Delete package</button></div></form></dialog>
 </body>
 </html>

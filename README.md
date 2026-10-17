@@ -1,6 +1,6 @@
 # drive.miszori.dev
 
-Private, client-encrypted, one-time file packages. Docker runs a small Go API and Caddy; the browser encrypts/decrypts with WebCrypto. No JavaScript frameworks, third-party scripts, analytics, database service, or build step for the web pages.
+Private, client-encrypted, one-time file packages. Both pages use a minimal dark interface with blue accents, branded `drive.miszori.dev`. Docker runs a small Go API and Caddy; the browser encrypts/decrypts with WebCrypto. No JavaScript frameworks, third-party scripts, analytics, database service, or build step for the web pages.
 
 ## What it does
 
@@ -9,7 +9,7 @@ Private, client-encrypted, one-time file packages. Docker runs a small Go API an
 - A package can be claimed exactly once, including during concurrent requests. The server deletes its ciphertext during/after the attempt, even if the download fails. There is no retry or recovery.
 - Unclaimed packages expire after 1 minute–30 days. The cleanup job runs every 15 seconds; expired packages are immediately unavailable even before cleanup runs.
 - Up to **20 GiB per package**, 20,000 files, and 100 active packages. Encryption/upload uses 8 MiB records, not whole-file buffers. The default aggregate ciphertext quota is 100 GiB.
-- Recipients download one **uncompressed `.tar` archive**, preserving folder paths. Modern Windows, macOS, and Linux can extract it. Uncompressed archives avoid wasting CPU on already-compressed large files.
+- Recipients download one **`.zip` archive**, preserving folder paths. ZIP64 supports files and archive offsets above 4 GiB. Entries use ZIP's uncompressed (store) method to keep large downloads streaming and avoid wasting CPU on already-compressed files. Use a current ZIP utility for very large archives.
 
 ## Network design
 
@@ -82,7 +82,7 @@ Do not run the local test stack on a production host with this network already a
 4. Every record uses **AES-256-GCM** with its 128-bit authentication tag. Its 96-bit IV is four zero bytes followed by the record index as an unsigned 64-bit big-endian integer. Unique indices under a fresh package key prevent IV reuse. Additional authenticated data is UTF-8 `packageID:recordIndex`; changing record order, package ID, key, or ciphertext fails authentication. Failed/ambiguous uploads are aborted rather than re-encrypted with a reused IV.
 5. The share link is `https://drive.miszori.dev/package/<256-bit-id>#<base64url-key>`. Browsers do not send fragments in HTTP requests. No key is sent to the API, stored in browser storage, or retained by the server.
 6. A POST claim atomically changes `ready` to `consuming` and persists the time/IP before returning any content. The binary response consists of repeated **4-byte big-endian ciphertext length + ciphertext** records. Each record is unlinked before it is streamed; remaining records are removed when the handler completes or fails. A crashed `consuming` package is purged at startup before serving requests. Multiple backend replicas are **not supported**: the in-process claim lock requires exactly one API instance.
-7. The browser authenticates and decrypts every record and writes a TAR stream with PAX extensions for Unicode/long names and large sizes. Filename validation rejects unsafe traversal paths and duplicate names. There is no trusted plaintext manifest on the server.
+7. The browser authenticates and decrypts every record and writes an uncompressed ZIP stream. CRC-32 checksums and data descriptors allow each file to be written without buffering it; ZIP64 records support sizes and offsets above 4 GiB. UTF-8 names preserve nested and Unicode paths. Only central-directory metadata is retained in memory, bounded by the manifest/file-count limits. Filename validation rejects unsafe traversal paths and duplicate names. CRC-32 is ZIP compatibility checking, not a security primitive: AES-GCM supplies authenticity. There is no trusted plaintext manifest on the server. Archive generation is entirely local, so existing encrypted packages also download as ZIP without migration.
 
 The Docker `packages` volume stores one directory per package. Its `meta.json` contains ID, state, creation/expiry/opening times, request IP, ciphertext byte/record counts, and (only during upload) the token hash. Numbered `.bin` files contain ciphertext. Temporary writes are synced and atomically renamed. Metadata is retained until 90 days after the package's expiry, then removed. It never contains original filenames, file contents, or decryption keys.
 
@@ -122,7 +122,7 @@ The Docker `packages` volume stores one directory per package. Its `meta.json` c
 │   ├── admin.js          Upload UI and private API interaction
 │   ├── public.js         Warning, one-time download, local archive saving
 │   ├── crypto.js         Chunk encryption, manifest/path validation, framing
-│   ├── tar.js            Bounded-memory TAR/PAX archive writer
+│   ├── zip.js            Bounded-memory ZIP/ZIP64 archive writer
 │   └── *.test.mjs        Browser-module protocol/archive tests
 ├── tests/
 │   ├── compose.yaml      Isolated loopback-only development/test stack
@@ -133,7 +133,7 @@ The Docker `packages` volume stores one directory per package. Its `meta.json` c
 
 ## Testing
 
-Go is not required on the host. Docker and Node 22+ are sufficient.
+Go is not required on the host. Use Docker, Node 22+, and Python 3 for native ZIP interoperability checks. Python is only a test dependency, not part of the application runtime.
 
 ```bash
 # Backend unit tests/static checks inside Docker
@@ -151,7 +151,8 @@ node --test web/*.test.mjs
 docker compose -p drive-test -f tests/compose.yaml up --build -d --wait
 node --test tests/integration.test.mjs
 
-# Optional real 20 GiB transfer: needs >21 GiB free Docker disk and time
+# Optional real 20 GiB transfer + ZIP64 CRC validation with Python 3:
+# needs >21 GiB free Docker disk AND >21 GiB in the host temporary directory
 LARGE_TEST_MIB=20480 node --test --test-name-pattern='optional large transfer' tests/integration.test.mjs
 
 # Deletes ONLY the named test stack and its disposable data
@@ -162,7 +163,9 @@ While the test stack is running, public UI is `http://localhost:18080` and admin
 
 ### Verification performed
 
-An actual **20 GiB** package was AES-GCM encrypted, uploaded through Caddy to Docker storage, downloaded once, authenticated/decrypted record by record, and byte-compared successfully (about 195 seconds on the development machine). Sampled container memory during this transfer was approximately 24–28 MiB for the API and 20–26 MiB for Caddy; the transfer did not require buffering the package. This is a protocol/storage test, not a claim that every browser/device can save a 20 GiB archive. The production Caddy configuration was also exercised with a local TLS certificate and reduced container capabilities: public admin requests returned 404 while the separate private admin API returned 200 with credentials. All 25 browser-module tests and the Go race detector/static checks passed. Docker integration tests verified concurrent one-time claims, tamper detection, IP spoof rejection, deletion, and a real 60-second expiry followed by background cleanup. Browser checks covered the responsive pages, real login/file/folder uploads, independent decryption of a browser-created package, fragment removal, and decrypted archive generation. The streaming UI path was exercised with a test writable destination; native OS Save dialogs and large-browser filesystem saves still need a real-device check.
+An actual **20 GiB** package was AES-GCM encrypted, uploaded through Caddy to Docker storage, downloaded once, authenticated/decrypted record by record, and byte-compared successfully (about 195 seconds on the development machine). Sampled container memory during this transfer was approximately 24–28 MiB for the API and 20–26 MiB for Caddy; the transfer did not require buffering the package. This is a protocol/storage test, not a claim that every browser/device can save a 20 GiB archive. The production Caddy configuration was also exercised with a local TLS certificate and reduced container capabilities: public admin requests returned 404 while the separate private admin API returned 200 with credentials. Browser-module tests and the Go race detector/static checks passed. Docker integration tests verified concurrent one-time claims, tamper detection, IP spoof rejection, deletion, and a real 60-second expiry followed by background cleanup. Browser checks covered the responsive pages, real login/file/folder uploads, independent decryption of a browser-created package, fragment removal, and decrypted archive generation. The streaming UI path was exercised with a test writable destination; native OS Save dialogs and large-browser filesystem saves still need a real-device check.
+
+The ZIP update was additionally tested with another **actual 20 GiB** encrypted round trip written to a streaming ZIP64 archive (about 212 seconds). Python's independent ZIP reader validated every entry CRC, a file above 4 GiB, subsequent entry offsets above 4 GiB, Unicode paths, and an empty file. The generated archive and ciphertext test data were cleaned up afterward. Regular ZIP headers, exact archive sizing, backpressure, and incomplete/sink-error handling are also covered by tests. A real browser-created Unicode-file package was uploaded, downloaded as ZIP, and independently checked with Python for original contents and CRC validity. Mobile admin and download pages were checked at 390 pixels wide with no horizontal page overflow; the audit table scrolls internally.
 
 ## Maintenance
 
@@ -170,6 +173,8 @@ An actual **20 GiB** package was AES-GCM encrypted, uploaded through Caddy to Do
 # Update/rebuild, preserving named volumes
 docker compose pull
 docker compose up --build -d --wait
+# Rebind/reload updated Caddy routing (including the ZIP module allowlist)
+docker compose up -d --force-recreate caddy
 ```
 
 Restarting intentionally destroys incomplete uploads and interrupted downloads. Ready packages survive until consumed/expired/deleted. `docker compose down` preserves data; `docker compose down -v` irreversibly removes packages and Caddy certificate state. Do not scale the API above one replica. Rotate the admin password by changing `.env` and recreating the API container; loaded admin tabs must log in again. Audit records are sensitive personal data: disclose IP/time collection to users and choose retention/deployment practices appropriate to your jurisdiction.

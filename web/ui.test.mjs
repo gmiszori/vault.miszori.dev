@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import { CHUNK_SIZE, MEMORY_LIMIT, encodeKey, decodeKey, importKey, encryptChunk, decryptChunk, parseManifest, serializeManifest } from './crypto.js';
-import { archiveSize } from './tar.js';
+import { archiveSize } from './zip.js';
 
 // A minimal DOM harness exercises the real entry modules without a server or dependencies.
 class Element {
@@ -84,7 +84,27 @@ async function packageStream(files, contents, raw = new Uint8Array(32).fill(29))
 const files = [{ path: 'folder/hello.txt', size: 5, lastModified: 1720000000000 }, { path: '空.txt', size: 0, lastModified: 0 }];
 const content = new TextEncoder().encode('hello');
 
-test('public opening removes the key and only explicit consent consumes; fallback saves TAR', async () => {
+function assertZip(archive, entries, payloads) {
+  const end = archive.length - 22;
+  assert.equal(archive.readUInt32LE(end), 0x06054b50);
+  assert.equal(archive.readUInt16LE(end + 10), entries.length);
+  let directory = archive.readUInt32LE(end + 16);
+  for (const [index, file] of entries.entries()) {
+    assert.equal(archive.readUInt32LE(directory), 0x02014b50);
+    assert.ok(archive.readUInt16LE(directory + 8) & 0x0800, 'ZIP filenames use UTF-8');
+    assert.equal(archive.readUInt32LE(directory + 24), file.size);
+    const nameLength = archive.readUInt16LE(directory + 28);
+    assert.equal(archive.subarray(directory + 46, directory + 46 + nameLength).toString('utf8'), file.path);
+    const local = archive.readUInt32LE(directory + 42);
+    assert.equal(archive.readUInt32LE(local), 0x04034b50);
+    const start = local + 30 + archive.readUInt16LE(local + 26) + archive.readUInt16LE(local + 28);
+    assert.deepEqual(archive.subarray(start, start + file.size), Buffer.from(payloads[index]));
+    directory += 46 + nameLength + archive.readUInt16LE(directory + 30) + archive.readUInt16LE(directory + 32);
+  }
+  assert.equal(directory, end);
+}
+
+test('public opening removes the key and only explicit consent consumes; fallback saves ZIP', async () => {
   const data = await packageStream(files, [content]);
   const calls = [];
   const ui = await harness('public', async (path, options) => {
@@ -95,7 +115,7 @@ test('public opening removes the key and only explicit consent consumes; fallbac
     return options.method === 'POST' ? new Response(data.body) : ready();
   }, { hash: `#${encodeKey(data.raw)}` });
   try {
-    await until(() => ui.$('package-state').textContent === 'READY WHEN YOU ARE');
+    await until(() => ui.$('package-state').textContent === 'Ready');
     assert.equal(calls.length, 1);
     assert.equal(calls[0][1].method, undefined);
     assert.equal(ui.replaced.length, 1);
@@ -109,9 +129,10 @@ test('public opening removes the key and only explicit consent consumes; fallbac
     assert.equal(calls.length, 2);
     assert.equal(ui.blobs.length, 1);
     assert.equal(ui.blobs[0].size, archiveSize(files));
-    const tar = Buffer.from(await ui.blobs[0].arrayBuffer());
-    assert.equal(tar.subarray(512, 517).toString(), 'hello');
-    assert.ok(tar.subarray(-1024).every(byte => byte === 0));
+    assert.equal(ui.blobs[0].type, 'application/zip');
+    assert.equal(ui.$('save-archive').download, 'drive-pkg-123.zip');
+    assertZip(Buffer.from(await ui.blobs[0].arrayBuffer()), files, [content, new Uint8Array()]);
+    assert.equal(ui.$('package-state').textContent, 'Downloaded');
     assert.ok(ui.$('save-archive').clicked);
     assert.equal(ui.$('download-button').disabled, true);
     assert.match(ui.$('download-status').textContent, /Archive ready/);
@@ -125,7 +146,9 @@ test('save picker runs before consuming, and writable output is streamed without
   const ui = await harness('public', async (path, options) => {
     if (options.method !== 'POST') return ready();
     sequence.push('consume'); return new Response(data.body);
-  }, { hash: `#${encodeKey(data.raw)}`, picker() {
+  }, { hash: `#${encodeKey(data.raw)}`, picker(options) {
+    assert.equal(options.suggestedName, 'drive-pkg-123.zip');
+    assert.deepEqual(options.types, [{ description: 'ZIP archive (all package files)', accept: { 'application/zip': ['.zip'] } }]);
     sequence.push('picker');
     return Promise.resolve({ async createWritable() {
       sequence.push('writable');
@@ -133,13 +156,15 @@ test('save picker runs before consuming, and writable output is streamed without
     } });
   } });
   try {
-    await until(() => ui.$('package-state').textContent === 'READY WHEN YOU ARE');
+    await until(() => ui.$('package-state').textContent === 'Ready');
     ui.$('download-consent').checked = true;
     const downloading = ui.$('download-button').dispatch('click');
     assert.deepEqual(sequence, ['picker']);
     await downloading;
     assert.deepEqual(sequence, ['picker', 'writable', 'consume', 'close']);
-    assert.equal(Buffer.concat(parts).length, archiveSize(files));
+    const output = Buffer.concat(parts);
+    assert.equal(output.length, archiveSize(files));
+    assertZip(output, files, [content, new Uint8Array()]);
     assert.equal(ui.blobs.length, 0);
   } finally { ui.restore(); }
 });
@@ -151,7 +176,7 @@ test('cancelling the save picker does not consume or invalidate the package', as
     hash: `#${encodeKey(raw)}`, picker() { throw new DOMException('cancelled', 'AbortError'); }
   });
   try {
-    await until(() => ui.$('package-state').textContent === 'READY WHEN YOU ARE');
+    await until(() => ui.$('package-state').textContent === 'Ready');
     ui.$('download-consent').checked = true;
     await ui.$('download-button').dispatch('click');
     assert.equal(consumes, 0);
@@ -167,7 +192,7 @@ test('fallback rejects an oversized manifest before reading file records and can
   const body = new ReadableStream({ start(controller) { controller.enqueue(data.body); }, cancel() { cancelled = true; } });
   const ui = await harness('public', async (path, options) => options.method === 'POST' ? new Response(body) : ready(), { hash: `#${encodeKey(data.raw)}` });
   try {
-    await until(() => ui.$('package-state').textContent === 'READY WHEN YOU ARE');
+    await until(() => ui.$('package-state').textContent === 'Ready');
     ui.$('download-consent').checked = true;
     await ui.$('download-button').dispatch('click');
     assert.equal(cancelled, true);
@@ -185,7 +210,7 @@ test('an incomplete transfer aborts the destination and can never be retried', a
     consumes++; return new Response(data.body.subarray(0, data.body.length - 1));
   }, { hash: `#${encodeKey(data.raw)}`, picker: async () => ({ createWritable: async () => ({ async write() {}, async close() { closes++; }, async abort() { aborts++; } }) }) });
   try {
-    await until(() => ui.$('package-state').textContent === 'READY WHEN YOU ARE');
+    await until(() => ui.$('package-state').textContent === 'Ready');
     ui.$('download-consent').checked = true;
     await ui.$('download-button').dispatch('click');
     await ui.$('download-button').dispatch('click');
@@ -204,12 +229,12 @@ test('same-document reopening strips the key, resets consent, and reports consum
     return consumes ? new Response(null, { status: 404 }) : ready();
   });
   try {
-    await until(() => ui.$('package-state').textContent === 'UNAVAILABLE');
+    await until(() => ui.$('package-state').textContent === 'Unavailable');
     assert.equal(gets, 0);
     location.hash = `#${encodeKey(data.raw)}`;
     await ui.win.dispatch('hashchange');
     assert.equal(location.hash, '');
-    await until(() => ui.$('package-state').textContent === 'READY WHEN YOU ARE');
+    await until(() => ui.$('package-state').textContent === 'Ready');
     assert.equal(ui.$('download-button').hidden, false);
     assert.equal(ui.$('download-consent').checked, false);
     ui.$('download-consent').checked = true;
@@ -217,7 +242,7 @@ test('same-document reopening strips the key, resets consent, and reports consum
     assert.equal(consumes, 1);
     location.hash = `#${encodeKey(data.raw)}`;
     await ui.win.dispatch('hashchange');
-    await until(() => ui.$('package-state').textContent === 'UNAVAILABLE');
+    await until(() => ui.$('package-state').textContent === 'Unavailable');
     assert.equal(location.hash, '');
     assert.equal(gets, 2);
     assert.equal(consumes, 1);
@@ -240,13 +265,13 @@ test('same-document key replacement ignores stale metadata responses', async () 
     await until(() => release);
     location.hash = `#${encodeKey(data.raw)}`;
     await ui.win.dispatch('hashchange');
-    await until(() => ui.$('package-state').textContent === 'READY WHEN YOU ARE');
+    await until(() => ui.$('package-state').textContent === 'Ready');
     release();
     await tick();
-    assert.equal(ui.$('package-state').textContent, 'READY WHEN YOU ARE');
+    assert.equal(ui.$('package-state').textContent, 'Ready');
     ui.$('download-consent').checked = true;
     await ui.$('download-button').dispatch('click');
-    assert.equal(ui.$('package-state').textContent, 'TRANSFER COMPLETE');
+    assert.equal(ui.$('package-state').textContent, 'Downloaded');
     assert.equal(ui.blobs.length, 1);
   } finally { ui.restore(); }
 });
@@ -263,7 +288,7 @@ test('hash changes during a save gesture are stripped without replacing the acti
     return new Promise(resolve => { releasePicker = () => resolve({ createWritable: async () => ({ async write() {}, async close() { closed = true; }, async abort() {} }) }); });
   } });
   try {
-    await until(() => ui.$('package-state').textContent === 'READY WHEN YOU ARE');
+    await until(() => ui.$('package-state').textContent === 'Ready');
     ui.$('download-consent').checked = true;
     const downloading = ui.$('download-button').dispatch('click');
     assert.ok(releasePicker);
@@ -275,7 +300,7 @@ test('hash changes during a save gesture are stripped without replacing the acti
     await downloading;
     assert.equal(closed, true);
     assert.equal(requests, 2);
-    assert.equal(ui.$('package-state').textContent, 'TRANSFER COMPLETE');
+    assert.equal(ui.$('package-state').textContent, 'Downloaded');
   } finally { ui.restore(); }
 });
 
@@ -299,6 +324,34 @@ function adminFetcher(onUpload) {
     return onUpload(path, options);
   };
 }
+
+test('audit shows compact nonwrapping package IDs but preserves full IDs for titles and deletion', async () => {
+  const ids = ['abcdef0123456789'.repeat(4), 'exactly12-idz', 'short-id'];
+  const deleted = [];
+  const ui = await signedInAdmin(async (path, options) => {
+    if (path.endsWith('/config')) return json({ publicOrigin: 'https://drive.miszori.dev' });
+    if (options.method === 'DELETE') { deleted.push(path); return new Response(null, { status: 204 }); }
+    return json({ packages: ids.map(id => ({ id, status: 'ready' })) });
+  });
+  try {
+    const rows = ui.$('audit-body').children;
+    for (const [index, id] of ids.entries()) {
+      const cell = rows[index].children[0];
+      assert.equal(cell.children[0].textContent, id.length > 12 ? `${id.slice(0, 12)}…` : id);
+      assert.equal(cell.title, id);
+      assert.equal(cell.className, 'package-id');
+    }
+    const button = rows[0].children[5].children[0];
+    assert.equal(button['aria-label'], `Delete package ${ids[0]}`);
+    await button.dispatch('click');
+    assert.equal(ui.$('delete-description').textContent, `Package ${ids[0]}`);
+    ui.$('delete-dialog').returnValue = 'confirm';
+    await ui.$('delete-dialog').dispatch('close');
+    assert.deepEqual(deleted, [`/admin/api/packages/${ids[0]}`]);
+    const css = await readFile(new URL('./styles.css', import.meta.url), 'utf8');
+    assert.match(css, /\.package-id\s*\{[^}]*white-space:\s*nowrap/);
+  } finally { ui.restore(); }
+});
 
 test('admin validates upload paths, encrypts sequential records, finalizes and forgets credentials on lock', async () => {
   const uploads = [];
@@ -423,6 +476,72 @@ test('an insecure admin page never sends credentials', async () => {
     assert.equal(ui.$('login-button').disabled, true);
     assert.equal(ui.$('crypto-warning').hidden, false);
   } finally { ui.restore(); }
+});
+
+test('entrypoints use the exact brand, dark scheme, and task-focused copy', async () => {
+  for (const name of ['index', 'admin']) {
+    const html = await readFile(new URL(`./${name}.html`, import.meta.url), 'utf8');
+    assert.match(html, /<title>drive\.miszori\.dev<\/title>/);
+    assert.match(html, /class="brand"[^>]*>drive\.miszori\.dev<\/a>/);
+    assert.match(html, /<meta name="color-scheme" content="dark">/);
+    assert.doesNotMatch(html, /A little less|Less exposure|Send it\.|Good things|Private by design|<footer|class="(?:hero|principles|privacy-panel|vault-art|workspace-badge)"/i);
+    assert.match(html, /Server logs include IP addresses/);
+  }
+  const publicHTML = await readFile(new URL('./index.html', import.meta.url), 'utf8');
+  assert.match(publicHTML, /Open your package link/);
+  assert.match(publicHTML, /even if the download fails or is cancelled/);
+  assert.match(publicHTML, /128 MiB, including archive overhead/);
+  assert.match(publicHTML, /unknown until you start and claim the one-time download/);
+  assert.match(publicHTML, /desktop Chrome or Edge/);
+  const adminHTML = await readFile(new URL('./admin.html', import.meta.url), 'utf8');
+  assert.match(adminHTML, /Expiry starts at package creation and includes upload time/);
+  assert.match(adminHTML, /key is not saved and cannot be recovered/);
+  assert.match(adminHTML, /id="result-panel"[^>]*hidden/);
+});
+
+test('dark palette provides readable text, blue controls and keyboard focus', async () => {
+  const css = await readFile(new URL('./styles.css', import.meta.url), 'utf8');
+  const colors = Object.fromEntries([...css.matchAll(/--([a-z-]+): (#[0-9a-f]{6});/g)].map(([, name, value]) => [name, value]));
+  function luminance(color) {
+    const rgb = color.slice(1).match(/../g).map(hex => {
+      const channel = parseInt(hex, 16) / 255;
+      return channel <= 0.04045 ? channel / 12.92 : ((channel + 0.055) / 1.055) ** 2.4;
+    });
+    return rgb[0] * 0.2126 + rgb[1] * 0.7152 + rgb[2] * 0.0722;
+  }
+  function contrast(a, b) {
+    const levels = [luminance(a), luminance(b)].sort((x, y) => y - x);
+    return (levels[0] + 0.05) / (levels[1] + 0.05);
+  }
+  assert.match(css, /color-scheme: dark/);
+  assert.ok(luminance(colors.background) < 0.02);
+  assert.ok(luminance(colors.surface) < 0.02);
+  for (const name of ['text', 'muted', 'danger', 'warning', 'success', 'focus']) {
+    assert.ok(contrast(colors[name], colors.surface) >= 4.5, `${name} has readable contrast`);
+  }
+  for (const name of ['blue', 'blue-hover']) {
+    assert.ok(contrast('#ffffff', colors[name]) >= 4.5, `${name} has readable button contrast`);
+    assert.ok(parseInt(colors[name].slice(5, 7), 16) > parseInt(colors[name].slice(1, 3), 16));
+  }
+  assert.match(css, /:focus-visible\s*\{[^}]*outline: 3px solid var\(--focus\)/);
+  assert.match(css, /\.file-picker:focus-within/);
+  assert.match(css, /@media \(max-width: 540px\)/);
+});
+
+test('mobile audit overflow stays inside its scroller, including positioned accessible labels', async () => {
+  const css = await readFile(new URL('./styles.css', import.meta.url), 'utf8');
+  const scroller = /\.table-scroll\s*\{([^}]+)\}/.exec(css)?.[1];
+  assert.ok(scroller);
+  // Screen-reader labels in wide columns must not use the page as their containing block.
+  assert.match(scroller, /position:\s*relative/);
+  assert.match(scroller, /min-width:\s*0/);
+  assert.match(scroller, /max-width:\s*100%/);
+  assert.match(scroller, /overflow-x:\s*auto/);
+  const inputs = /input:not\(\[type="checkbox"\]\):not\(\[type="file"\]\), select\s*\{([^}]+)\}/.exec(css)?.[1];
+  assert.ok(inputs);
+  assert.match(inputs, /min-width:\s*0/);
+  assert.match(inputs, /max-width:\s*100%/);
+  assert.doesNotMatch(css, /(?:html|body)\s*\{[^}]*overflow(?:-x)?:\s*(?:hidden|clip)/);
 });
 
 test('HTML entrypoints reference only the agreed self-hosted assets and contain no inline scripts or styles', async () => {

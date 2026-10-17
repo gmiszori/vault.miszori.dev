@@ -1,5 +1,5 @@
 import { CHUNK_SIZE, MEMORY_LIMIT, decodeKey, importKey, decryptChunk, parseManifest, FramedReader, formatBytes } from './crypto.js';
-import { TarWriter, archiveSize } from './tar.js';
+import { ZipWriter, archiveSize } from './zip.js';
 
 let fragment = location.hash.slice(1);
 if (location.hash) history.replaceState(null, '', location.pathname + location.search);
@@ -40,7 +40,7 @@ function memorySink(filename) {
       bytes += part.byteLength;
     },
     async close() {
-      const blob = new Blob(parts, { type: 'application/x-tar' });
+      const blob = new Blob(parts, { type: 'application/zip' });
       parts = [];
       blobURL = URL.createObjectURL(blob);
       const link = $('save-archive');
@@ -65,7 +65,7 @@ async function download() {
   updateButton();
   status('Choose a destination. The transfer has not started yet.');
   const id = route[1];
-  const filename = `drive-${id.slice(0, 12)}.tar`;
+  const filename = `drive-${id.slice(0, 12)}.zip`;
   let consumed = false;
   let sink;
   let frames;
@@ -73,7 +73,7 @@ async function download() {
     // Invoke the picker during the click gesture, before any asynchronous work.
     const destination = supportsStreaming ? await window.showSaveFilePicker({
       suggestedName: filename,
-      types: [{ description: 'TAR archive (all package files)', accept: { 'application/x-tar': ['.tar'] } }]
+      types: [{ description: 'ZIP archive (all package files)', accept: { 'application/zip': ['.zip'] } }]
     }) : null;
     if (destination) sink = await destination.createWritable();
     else sink = memorySink(filename);
@@ -99,32 +99,32 @@ async function download() {
     if (!supportsStreaming && archiveSize(manifest.files) > MEMORY_LIMIT) {
       throw new Error('This archive is larger than the 128 MiB browser limit. No file data was saved. The one-time transfer has already been claimed; ask the sender for a new link and use desktop Chrome or Edge.');
     }
-    const tar = new TarWriter(sink);
+    const archive = new ZipWriter(sink);
     let index = 1;
     let received = 0;
     for (const file of manifest.files) {
-      await tar.startFile(file);
+      await archive.startFile(file);
       for (let offset = 0; offset < file.size; offset += CHUNK_SIZE) {
         controller.signal.throwIfAborted();
         const plaintext = await decryptChunk(key, id, index++, await frames.record());
         if (plaintext.length !== Math.min(CHUNK_SIZE, file.size - offset)) throw new Error('Decrypted file size does not match the manifest.');
-        await tar.write(plaintext);
+        await archive.write(plaintext);
         received += plaintext.length;
         progress(received, bytes);
       }
-      await tar.endFile();
+      await archive.endFile();
     }
     if (index !== chunks) throw new Error('The package record count is invalid.');
     await frames.end();
     controller.signal.throwIfAborted();
-    await tar.close();
+    await archive.close();
     progress(bytes, bytes);
     $('download-stage').textContent = 'Decrypted & saved';
-    $('package-state').textContent = 'TRANSFER COMPLETE';
-    $('package-title').textContent = 'Delivered. Then disappeared.';
-    $('package-description').textContent = 'The one-time transfer is complete. Your decrypted files are inside the TAR archive.';
+    $('package-state').textContent = 'Downloaded';
+    $('package-title').textContent = 'Package downloaded';
+    $('package-description').textContent = 'Your files are in the ZIP archive. The server copy has been destroyed.';
     $('availability').textContent = 'Claimed — no longer on the server';
-    status(supportsStreaming ? 'Archive saved. Open the .tar file to access your files.' : 'Archive ready. If your browser did not save it automatically, use “Save decrypted .tar archive” below.');
+    status(supportsStreaming ? 'Archive saved. Open the .zip file to access your files.' : 'Archive ready. If your browser did not save it automatically, use “Save decrypted ZIP archive” below.');
     $('download-button').hidden = true;
     $('consent-label').hidden = true;
     $('download-warning').hidden = true;
@@ -136,7 +136,7 @@ async function download() {
       ? `${aborted ? 'Transfer cancelled.' : error.message} This transfer cannot be resumed. Ask the sender for a new package.`
       : aborted ? 'Save cancelled. Your package has not been claimed.' : `Could not prepare a save destination. ${error.message} Your package has not been claimed.`, !aborted || consumed);
     if (consumed) {
-      $('package-state').textContent = 'TRANSFER UNAVAILABLE';
+      $('package-state').textContent = 'Unavailable';
       $('availability').textContent = 'Claimed or unavailable';
       $('download-stage').textContent = 'Transfer stopped — not recoverable';
       keyBytes?.fill(0);
@@ -161,7 +161,7 @@ async function initialize() {
   if (!route) {
     fragment = '';
     if (location.pathname !== '/') {
-      $('landing-title').textContent = 'This page wandered off.';
+      $('landing-title').textContent = 'Page not found';
       $('landing-card').querySelector('p').textContent = 'Check the complete package link from your sender.';
     }
     return;
@@ -169,9 +169,9 @@ async function initialize() {
   $('landing-card').hidden = true;
   $('package-card').hidden = false;
   $('fallback-warning').hidden = supportsStreaming;
-  $('package-state').textContent = 'CHECKING';
-  $('package-title').textContent = 'A package, just for you.';
-  $('package-description').textContent = 'Checking whether your encrypted package is available. Opening this page does not download it.';
+  $('package-state').textContent = 'Checking';
+  $('package-title').textContent = 'Download package';
+  $('package-description').textContent = 'Checking availability. Opening this page does not start a download.';
   $('availability').textContent = 'Checking…';
   $('download-button').hidden = false;
   $('consent-label').hidden = false;
@@ -195,17 +195,17 @@ async function initialize() {
     expiresAt = Date.parse(info.expiresAt);
     if (info.status !== 'ready' || !Number.isFinite(expiresAt) || expiresAt <= Date.now()) throw new Error('This package is not available. Ask the sender for a new link.');
     available = true;
-    $('package-state').textContent = 'READY WHEN YOU ARE';
+    $('package-state').textContent = 'Ready';
     $('availability').textContent = `Until ${new Date(expiresAt).toLocaleString()}`;
-    $('package-description').textContent = 'Your encrypted package is ready. File names and sizes stay private until you choose to download. The key was removed from your address bar.';
+    $('package-description').textContent = 'Ready to download. File names and sizes are encrypted until you start.';
     status('Nothing is downloaded or destroyed until you press the button.');
   } catch (error) {
     if (attempt !== initialization) return;
     fragment = '';
     keyBytes?.fill(0);
     keyBytes = null;
-    $('package-state').textContent = 'UNAVAILABLE';
-    $('package-title').textContent = 'Not here to stay.';
+    $('package-state').textContent = 'Unavailable';
+    $('package-title').textContent = 'Package unavailable';
     $('package-description').textContent = 'Checking availability does not start a download.';
     $('availability').textContent = 'Unavailable';
     $('consent-label').hidden = true;

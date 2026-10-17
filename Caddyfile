@@ -50,7 +50,7 @@ https://{$DOMAIN} {
 		rewrite * /index.html
 		file_server
 	}
-	@assets path /styles.css /public.js /crypto.js /tar.js
+	@assets path /styles.css /public.js /crypto.js /zip.js
 	handle @assets {
 		file_server
 	}
@@ -86,7 +86,7 @@ https://{$DOMAIN}:8443 {
 		rewrite * /index.html
 		file_server
 	}
-	@assets path /styles.css /admin.js /public.js /crypto.js /tar.js
+	@assets path /styles.css /admin.js /public.js /crypto.js /zip.js
 	handle @assets {
 		file_server
 	}
