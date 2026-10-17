@@ -171,6 +171,31 @@ test('public opening removes the key and only explicit consent consumes; fallbac
   } finally { ui.restore(); }
 });
 
+test('only the checking card is visible until availability resolves, then ready or unavailable replaces it', async () => {
+  const html = await readFile(new URL('./index.html', import.meta.url), 'utf8');
+  assert.match(html, /id="checking-card"[^>]*>\s*<h1 id="checking-title">Package checking availability<\/h1>\s*<\/section>/);
+  assert.match(html, /id="package-card"[^>]*hidden/);
+  for (const found of [true, false]) {
+    let resolveMetadata;
+    const ui = await harness('public', () => new Promise(resolve => { resolveMetadata = resolve; }), { hash: `#${encodeKey(new Uint8Array(32).fill(2))}` });
+    try {
+      await until(() => resolveMetadata);
+      assert.equal(ui.$('checking-card').hidden, false);
+      assert.equal(ui.$('package-card').hidden, true);
+      resolveMetadata(found ? ready() : new Response(null, { status: 404 }));
+      await until(() => !ui.$('package-card').hidden);
+      assert.equal(ui.$('checking-card').hidden, true);
+      assert.equal(ui.$('package-title').textContent, found ? 'Package ready to download' : 'Package unavailable');
+      assert.equal(ui.$('package-facts').hidden, !found);
+      if (!found) {
+        assert.equal(ui.$('fallback-warning').hidden, true);
+        assert.equal(ui.$('consent-label').hidden, true);
+        assert.equal(ui.$('download-warning').hidden, true);
+      }
+    } finally { ui.restore(); }
+  }
+});
+
 test('missing-key and ready states have distinct colors and reset on a corrected link', async () => {
   let requests = 0;
   const ui = await harness('public', async () => { requests++; return ready(); });
@@ -664,18 +689,15 @@ test('entrypoints use the exact brand, dark scheme, and task-focused copy', asyn
   for (const name of ['index', 'admin']) {
     const html = await readFile(new URL(`./${name}.html`, import.meta.url), 'utf8');
     assert.match(html, /<title>drive\.miszori\.dev<\/title>/);
-    if (name === 'index') {
-      assert.match(html, /<span class="brand">drive\.miszori\.dev<\/span>/);
-      assert.doesNotMatch(html, /<a\b[^>]*\bhref="\/"/);
-    } else {
-      assert.match(html, /<a class="brand" href="\/admin\/">drive\.miszori\.dev<\/a>/);
-    }
+    assert.doesNotMatch(html, /<header|class="brand"/);
+    assert.doesNotMatch(html, /<a\b[^>]*\bhref="\/"/);
     assert.match(html, /<meta name="color-scheme" content="dark">/);
     assert.doesNotMatch(html, /A little less|Less exposure|Send it\.|Good things|Private by design|<footer|class="(?:hero|principles|privacy-panel|vault-art|workspace-badge)"/i);
     if (name === 'admin') assert.match(html, /Server logs include IP addresses/);
   }
   const publicHTML = await readFile(new URL('./index.html', import.meta.url), 'utf8');
-  assert.match(publicHTML, /Open your package link/);
+  assert.match(publicHTML, /Package checking availability/);
+  assert.doesNotMatch(publicHTML, /landing-card|Open your package link|Opening this page does not start/);
   assert.match(publicHTML, /even if the download fails or is cancelled/);
   assert.match(publicHTML, /id="download-warning" class="notice warning one-time-warning"/);
   assert.match(publicHTML, /128 MiB, including archive overhead/);
@@ -1128,11 +1150,11 @@ test('pagehide during label encryption prevents late PATCH and plaintext renderi
   } finally { crypto.subtle.encrypt = originalEncrypt; ui.restore(); }
 });
 
-test('admin panels and header use one wide padded shell without a header bottom line', async () => {
+test('public and admin panels use matching narrower shells without branding headers', async () => {
   const css = await readFile(new URL('./styles.css', import.meta.url), 'utf8');
   const html = await readFile(new URL('./admin.html', import.meta.url), 'utf8');
-  assert.match(css, /\.admin-body\s*\{[^}]*max-width:\s*1280px;[^}]*padding:\s*0 24px 40px/);
-  assert.match(css, /\.public-shell\s*\{[^}]*max-width:\s*1280px;[^}]*padding:\s*0 24px 40px/);
+  assert.match(css, /\.admin-body\s*\{[^}]*max-width:\s*1100px;[^}]*padding:\s*0 24px 40px/);
+  assert.match(css, /\.public-shell\s*\{[^}]*max-width:\s*1100px;[^}]*padding:\s*0 24px 40px/);
   assert.match(css, /\.login-panel, \.composer, \.result-panel, \.audit-panel\s*\{\s*width:\s*100%/);
   assert.doesNotMatch(css, /(?:\.composer|\.result-panel|\.login-panel|\.audit-panel)[^{]*\{[^}]*max-width/);
   assert.doesNotMatch(css, /\.site-header, \.admin-header\s*\{[^}]*border-bottom/);

@@ -213,21 +213,14 @@ async function initialize() {
   keyBytes?.fill(0);
   keyBytes = null;
   updateButton();
-  if (!route) {
-    fragment = '';
-    if (location.pathname !== '/') {
-      $('landing-title').textContent = 'Page not found';
-      $('landing-card').querySelector('p').textContent = 'Check the complete package link from your sender.';
-    }
-    return;
-  }
-  $('landing-card').hidden = true;
-  $('package-card').hidden = false;
+  $('checking-card').hidden = false;
+  $('package-card').hidden = true;
+  $('package-facts').hidden = false;
   blobFallbackOffered = !supportsLocalStreaming;
   $('fallback-warning').hidden = supportsStreaming || supportsLocalStreaming;
   packageState('Checking');
   $('package-title').textContent = 'Package ready to download';
-  $('package-description').textContent = 'Checking availability. Opening this page does not start a download.';
+  $('package-description').textContent = '';
   $('availability').textContent = 'Checking…';
   $('download-button').hidden = false;
   $('consent-label').hidden = false;
@@ -239,8 +232,9 @@ async function initialize() {
   $('download-percent').textContent = '0%';
   $('save-archive').hidden = true;
   if (blobURL) { URL.revokeObjectURL(blobURL); blobURL = null; }
-  status('Checking availability. Nothing has been consumed.');
+  status('');
   try {
+    if (!route) throw new Error('This package either does not exist or has already been downloaded.');
     if (!window.isSecureContext || !crypto.subtle) throw new Error('Browser encryption requires a secure HTTPS connection and Web Crypto support.');
     keyBytes = decodeKey(fragment);
     fragment = '';
@@ -268,8 +262,12 @@ async function initialize() {
     $('consent-label').hidden = true;
     $('download-button').hidden = true;
     $('download-warning').hidden = true;
+    $('fallback-warning').hidden = true;
+    $('package-facts').hidden = true;
     status(error.message, true);
   }
+  $('checking-card').hidden = true;
+  $('package-card').hidden = false;
   updateButton();
 }
 

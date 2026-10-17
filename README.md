@@ -1,6 +1,6 @@
 # drive.miszori.dev
 
-Private, client-encrypted, one-time file packages. Both pages use a minimal black interface with blue controls, green Ready states, and red Unavailable/destructive-download warnings, branded `drive.miszori.dev`. Docker runs a small Go API and Caddy; the browser encrypts/decrypts with WebCrypto. No JavaScript frameworks, third-party scripts, analytics, database service, or build step for the web pages.
+Private, client-encrypted, one-time file packages. Both pages use a minimal black interface with blue controls, green Ready states, and red Unavailable/destructive-download warnings. The layout is capped at 1,100px with no branding header. Package links initially show only “Package checking availability”, then reveal the ready or unavailable view after validation. Docker runs a small Go API and Caddy; the browser encrypts/decrypts with WebCrypto. No JavaScript frameworks, third-party scripts, analytics, database service, or build step for the web pages.
 
 ## What it does
 
