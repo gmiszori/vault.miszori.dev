@@ -60,7 +60,7 @@ Caddy obtains/renews a certificate automatically. Certificate issuance requires 
 
 Then visit `https://drive.miszori.dev/admin`. On first use, enter the setup token and choose/confirm a **different strong admin password** (16–1,024 Unicode characters). Username defaults to `admin`. The password is never sent to the server: the browser derives independent authentication and name-encryption keys. Later sign-ins use only that password and automatically unlock package names. The one-time token cannot replace or reset an enrolled password; remove `ADMIN_SETUP_TOKEN` from `.env` after enrollment if desired. Keep the data volume, including `auth.json` and `label-salt`.
 
-All sessions and name keys stay in tab memory and are cleared on sign-out/leaving. Private API requests carry a derived authentication value over HTTPS, not the password. This is deliberately a single-admin VPN application, not a public identity/MFA provider. Both public and VPN `/` return **HTTP 404 with “Not found”**; there is no landing page. Use `/admin` explicitly.
+All sessions and name keys stay in tab memory and are cleared on sign-out/leaving. Private API requests carry a derived authentication value over HTTPS, not the password. This is deliberately a single-admin VPN application, not a public identity/MFA provider. Both public and VPN `/` return **HTTP 444 with an empty body**; there is no landing page. This is a nonstandard HTTP response, not Nginx-style silent connection termination. Use `/admin` explicitly.
 
 6. Verify **from a device outside the VPN** that `/admin`, `/admin/api/packages`, and `/api/admin/packages` return 404. Public recipients must use public DNS, not the admin's private mapping.
 
@@ -181,7 +181,7 @@ Limits must be positive and internally consistent: upload/download limits cannot
 │   ├── main_test.go      Backend lifecycle, races, auth, failure/expiry tests
 │   └── *_test.go         Browser, encrypted-label, retention and recovery tests
 ├── web/
-│   ├── index.html        Package-only destructive-download page (root is 404)
+│   ├── index.html        Package-only destructive-download page (root is 444)
 │   ├── admin.html        VPN login/upload/audit page
 │   ├── styles.css        Responsive UI; no remote fonts or assets
 │   ├── admin.js          Upload UI and private API interaction
@@ -237,7 +237,7 @@ LARGE_TEST_MIB=192 SLOW_RECORD_MS=6500 node --test --test-name-pattern='optional
 docker compose -p drive-test -f tests/compose.yaml down -v
 ```
 
-While the test stack is running, use a generated `http://localhost:18080/package/...#key` link for the public UI; the bare root intentionally returns HTTP 404 with “Not found”. Admin UI is `http://localhost:18081/admin`. Tests automatically enroll user `admin`, password `integration-admin-password-with-zero-server-knowledge`, using token `integration-setup-token-never-deploy-1234567890`. These test-only values are deliberately fixed and **must never be deployed**. For manual first-setup testing, use those same values before running the suite, or start with a new disposable test volume. Production certificate issuance, real VPN reachability, split DNS, firewall enforcement, and multiple real browser/OS combinations must be verified on the deployment server separately.
+While the test stack is running, use a generated `http://localhost:18080/package/...#key` link for the public UI; the bare root intentionally returns HTTP 444 with an empty body. Admin UI is `http://localhost:18081/admin`. Tests automatically enroll user `admin`, password `integration-admin-password-with-zero-server-knowledge`, using token `integration-setup-token-never-deploy-1234567890`. These test-only values are deliberately fixed and **must never be deployed**. For manual first-setup testing, use those same values before running the suite, or start with a new disposable test volume. Production certificate issuance, real VPN reachability, split DNS, firewall enforcement, and multiple real browser/OS combinations must be verified on the deployment server separately.
 
 ### Verification performed
 

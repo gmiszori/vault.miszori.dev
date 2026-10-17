@@ -23,6 +23,7 @@ function status(message, error = false) {
 }
 
 function updateButton() {
+  $('download-consent').disabled = busy || !available;
   $('download-button').disabled = !available || busy || !$('download-consent').checked;
 }
 
@@ -31,6 +32,7 @@ function packageState(label) {
   element.textContent = label;
   element.classList.toggle('status-ready', label === 'Ready');
   element.classList.toggle('status-unavailable', label === 'Unavailable');
+  element.classList.toggle('status-downloading', label === 'Downloading');
 }
 
 function progress(bytes, total) {
@@ -115,9 +117,7 @@ async function download() {
     $('download-progress').hidden = false;
     $('cancel-download').hidden = false;
     $('download-stage').textContent = 'Claiming encrypted package…';
-    status(localStream
-      ? 'Keep this tab open. Browser download restrictions (including Safari/iOS or private mode), storage limits, or background suspension may interrupt saving. Starting this transfer cannot be undone.'
-      : 'Keep this tab open. Starting this transfer cannot be undone.');
+    status('');
     consumed = true;
     available = false;
     packageState('Downloading');
@@ -252,7 +252,7 @@ async function initialize() {
     available = true;
     packageState('Ready');
     $('availability').textContent = `Until ${new Date(expiresAt).toLocaleString()}`;
-    $('package-description').textContent = 'Ready to download. File names and sizes are encrypted until you start.';
+    $('package-description').textContent = '';
     status('Nothing is downloaded or destroyed until you press the button.');
   } catch (error) {
     if (attempt !== initialization) return;
@@ -261,7 +261,7 @@ async function initialize() {
     keyBytes = null;
     packageState('Unavailable');
     $('package-title').textContent = 'Package unavailable';
-    $('package-description').textContent = 'Checking availability does not start a download.';
+    $('package-description').textContent = 'This package either does not exist or has already been downloaded.';
     $('availability').textContent = 'Unavailable';
     $('consent-label').hidden = true;
     $('download-button').hidden = true;

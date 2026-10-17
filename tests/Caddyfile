@@ -48,7 +48,7 @@
 	import headers
 	root * /srv
 	handle / {
-		respond "Not found" 404
+		respond "" 444
 	}
 	handle /local-download/* {
 		respond "" 404
@@ -79,7 +79,7 @@
 	import headers
 	root * /srv
 	handle / {
-		respond "Not found" 404
+		respond "" 444
 	}
 	handle /local-download/* {
 		respond "" 404

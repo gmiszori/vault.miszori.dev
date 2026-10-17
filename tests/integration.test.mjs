@@ -60,7 +60,7 @@ test('Caddy isolates admin routes and supplies privacy headers', async () => {
     const r = await fetch(pub + path, { headers: auth }); assert.equal(r.status, 404, path);
   }
   for (const origin of [pub, admin]) {
-    const root = await fetch(origin); assert.equal(root.status, 404); assert.equal(await root.text(), 'Not found');
+    const root = await fetch(origin); assert.equal(root.status, 444); assert.equal(await root.text(), '');
     const unusedStream = await fetch(`${origin}/local-download/${'0'.repeat(64)}`);
     assert.equal(unusedStream.status, 404); assert.equal(await unusedStream.text(), '');
   }

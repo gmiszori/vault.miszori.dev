@@ -55,7 +55,7 @@
 
 http://{$DOMAIN} {
 	handle / {
-		respond "Not found" 404
+		respond "" 444
 	}
 	handle {
 		redir https://{$DOMAIN}{uri} 308
@@ -66,7 +66,7 @@ https://{$DOMAIN} {
 	import common_headers
 	root * /srv
 	handle / {
-		respond "Not found" 404
+		respond "" 444
 	}
 	handle /local-download/* {
 		respond "" 404
@@ -95,7 +95,7 @@ https://{$DOMAIN} {
 
 :8081 {
 	handle / {
-		respond "Not found" 404
+		respond "" 444
 	}
 	handle {
 		redir https://{$DOMAIN}{uri} 308
@@ -106,7 +106,7 @@ https://{$DOMAIN}:8443 {
 	import common_headers
 	root * /srv
 	handle / {
-		respond "Not found" 404
+		respond "" 444
 	}
 	handle /local-download/* {
 		respond "" 404

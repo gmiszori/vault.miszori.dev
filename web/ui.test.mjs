@@ -177,6 +177,7 @@ test('missing-key and ready states have distinct colors and reset on a corrected
   try {
     await until(() => ui.$('package-state').textContent === 'Unavailable');
     assert.equal(ui.$('download-status').textContent, 'This link is missing a valid decryption key.');
+    assert.equal(ui.$('package-description').textContent, 'This package either does not exist or has already been downloaded.');
     assert.ok(ui.$('package-state').classList.contains('status-unavailable'));
     assert.equal(ui.$('package-state').classList.contains('status-ready'), false);
     assert.equal(requests, 0);
@@ -215,6 +216,12 @@ test('save picker runs before consuming, and writable output is streamed without
   const parts = [];
   const ui = await harness('public', async (path, options) => {
     if (options.method !== 'POST') return ready();
+    assert.equal(ui.$('download-consent').disabled, true);
+    assert.equal(ui.$('download-consent').checked, true);
+    assert.equal(ui.$('package-state').textContent, 'Downloading');
+    assert.ok(ui.$('package-state').classList.contains('status-downloading'));
+    assert.equal(ui.$('package-state').classList.contains('status-ready'), false);
+    assert.equal(ui.$('download-status').textContent, '');
     sequence.push('consume'); return new Response(data.body);
   }, { hash: `#${encodeKey(data.raw)}`, picker(options) {
     assert.equal(options.suggestedName, 'drive-pkg-123.zip');
@@ -228,7 +235,10 @@ test('save picker runs before consuming, and writable output is streamed without
   try {
     await until(() => ui.$('package-state').textContent === 'Ready');
     ui.$('download-consent').checked = true;
+    assert.equal(ui.$('package-description').textContent, '');
+    assert.equal(ui.$('download-consent').disabled, false);
     const downloading = ui.$('download-button').dispatch('click');
+    assert.equal(ui.$('download-consent').disabled, true);
     assert.deepEqual(sequence, ['picker']);
     await downloading;
     assert.deepEqual(sequence, ['picker', 'writable', 'consume', 'close']);
@@ -236,6 +246,8 @@ test('save picker runs before consuming, and writable output is streamed without
     assert.equal(output.length, archiveSize(files));
     assertZip(output, files, [content, new Uint8Array()]);
     assert.equal(ui.blobs.length, 0);
+    assert.equal(ui.$('download-consent').disabled, true);
+    assert.equal(ui.$('package-state').classList.contains('status-downloading'), false);
   } finally { ui.restore(); }
 });
 
@@ -703,6 +715,9 @@ test('dark palette provides readable text, blue controls and keyboard focus', as
   assert.ok(danger[0] > danger[1] && danger[0] > danger[2], 'danger is red');
   assert.ok(success[1] > success[0] && success[1] > success[2], 'ready is green');
   assert.match(css, /\.status-ready\s*\{[^}]*color: var\(--success\)/);
+  assert.match(css, /\.status-downloading\s*\{[^}]*color: #facc15/);
+  assert.ok(contrast('#facc15', colors.surface) >= 4.5, 'downloading yellow has readable contrast');
+  assert.match(css, /#package-description:empty\s*\{[^}]*display: none/);
   assert.match(css, /\.status-unavailable\s*\{[^}]*color: var\(--danger\)/);
   assert.match(css, /\.notice\.one-time-warning\s*\{[^}]*border-color: var\(--danger\); color: var\(--danger\)/);
   assert.match(css, /\.notice\.one-time-warning strong\s*\{[^}]*color: var\(--danger\)/);

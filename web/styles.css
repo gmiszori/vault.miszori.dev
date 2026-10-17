@@ -57,6 +57,7 @@ label:not(.check-row):not(.file-picker) { display: block; margin-bottom: 6px; fo
 .panel-heading, .selection-heading { display: flex; align-items: center; justify-content: space-between; gap: 16px; flex-wrap: wrap; margin-bottom: 16px; }
 .panel-heading h1, .panel-heading h2 { margin-bottom: 0; }
 .package-state { color: var(--muted); font-size: 13px; }
+#package-description:empty { display: none; }
 .button { display: inline-flex; align-items: center; justify-content: center; gap: 8px; min-height: 46px; padding: 10px 16px; border: 1px solid transparent; border-radius: 6px; font-size: 14px; font-weight: 600; line-height: 1.5; text-align: center; text-decoration: none; }
 .button.primary { color: #fff; background: var(--blue); }
 .button.primary:hover:not(:disabled) { background: var(--blue-hover); }
@@ -119,6 +120,7 @@ td { min-width: 100px; }
 .table-secondary { display: block; margin-top: 4px; color: var(--muted); }
 .status-badge { font-weight: 600; }
 .status-ready { color: var(--success); }
+.status-downloading { color: #facc15; }
 .status-uploading, .status-consuming { color: var(--focus); }
 .status-consumed, .status-expired, .status-deleted, .status-unknown { color: var(--muted); }
 .status-failed, .status-unavailable { color: var(--danger); }

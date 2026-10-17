@@ -129,7 +129,8 @@ test('preclaim 429 aborts the prepared worker but preserves the key and proof fo
   assert.equal(context.state().busy, false);
   assert.deepEqual([...context.state().key], [...raw]);
   assert.equal(element('package-state').textContent, 'Ready');
-  assert.match(element('package-description').textContent, /Ready to download/);
+  assert.equal(element('package-description').textContent, '');
+  assert.equal(element('download-consent').disabled, false);
   assert.match(element('download-status').textContent, /server is busy.*not been claimed.*press Download/);
   assert.doesNotMatch(element('download-status').textContent, /cannot be resumed|new package/);
   assert.equal(element('download-progress').hidden, true);
