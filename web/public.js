@@ -236,7 +236,7 @@ async function initialize() {
   try {
     if (!route) throw new Error('This package either does not exist or has already been downloaded.');
     if (!window.isSecureContext || !crypto.subtle) throw new Error('Browser encryption requires a secure HTTPS connection and Web Crypto support.');
-    keyBytes = decodeKey(fragment);
+    try { keyBytes = decodeKey(fragment); } catch { throw new Error(''); }
     fragment = '';
     const response = await fetch(`/api/packages/${encodeURIComponent(route[1])}`, { credentials: 'omit', cache: 'no-store', referrerPolicy: 'no-referrer' });
     if (attempt !== initialization) return;

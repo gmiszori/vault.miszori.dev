@@ -173,7 +173,7 @@ test('public opening removes the key and only explicit consent consumes; fallbac
 
 test('only the checking card is visible until availability resolves, then ready or unavailable replaces it', async () => {
   const html = await readFile(new URL('./index.html', import.meta.url), 'utf8');
-  assert.match(html, /id="checking-card"[^>]*>\s*<h1 id="checking-title">Package checking availability<\/h1>\s*<\/section>/);
+  assert.match(html, /id="checking-card"[^>]*>\s*<h1 id="checking-title">Checking package availability<\/h1>\s*<\/section>/);
   assert.match(html, /id="package-card"[^>]*hidden/);
   for (const found of [true, false]) {
     let resolveMetadata;
@@ -201,7 +201,7 @@ test('missing-key and ready states have distinct colors and reset on a corrected
   const ui = await harness('public', async () => { requests++; return ready(); });
   try {
     await until(() => ui.$('package-state').textContent === 'Unavailable');
-    assert.equal(ui.$('download-status').textContent, 'This link is missing a valid decryption key.');
+    assert.equal(ui.$('download-status').textContent, '');
     assert.equal(ui.$('package-description').textContent, 'This package either does not exist or has already been downloaded.');
     assert.ok(ui.$('package-state').classList.contains('status-unavailable'));
     assert.equal(ui.$('package-state').classList.contains('status-ready'), false);
@@ -696,7 +696,7 @@ test('entrypoints use the exact brand, dark scheme, and task-focused copy', asyn
     if (name === 'admin') assert.match(html, /Server logs include IP addresses/);
   }
   const publicHTML = await readFile(new URL('./index.html', import.meta.url), 'utf8');
-  assert.match(publicHTML, /Package checking availability/);
+  assert.match(publicHTML, /Checking package availability/);
   assert.doesNotMatch(publicHTML, /landing-card|Open your package link|Opening this page does not start/);
   assert.match(publicHTML, /even if the download fails or is cancelled/);
   assert.match(publicHTML, /id="download-warning" class="notice warning one-time-warning"/);
@@ -1154,7 +1154,8 @@ test('public and admin panels use matching narrower shells without branding head
   const css = await readFile(new URL('./styles.css', import.meta.url), 'utf8');
   const html = await readFile(new URL('./admin.html', import.meta.url), 'utf8');
   assert.match(css, /\.admin-body\s*\{[^}]*max-width:\s*1100px;[^}]*padding:\s*0 24px 40px/);
-  assert.match(css, /\.public-shell\s*\{[^}]*max-width:\s*1100px;[^}]*padding:\s*0 24px 40px/);
+  assert.match(css, /\.public-shell\s*\{[^}]*max-width:\s*1100px;[^}]*min-height: 100dvh;[^}]*padding:\s*32px 24px;[^}]*display: flex/);
+  assert.match(css, /\.public-main\s*\{[^}]*margin-block: auto/);
   assert.match(css, /\.login-panel, \.composer, \.result-panel, \.audit-panel\s*\{\s*width:\s*100%/);
   assert.doesNotMatch(css, /(?:\.composer|\.result-panel|\.login-panel|\.audit-panel)[^{]*\{[^}]*max-width/);
   assert.doesNotMatch(css, /\.site-header, \.admin-header\s*\{[^}]*border-bottom/);
