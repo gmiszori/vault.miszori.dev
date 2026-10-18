@@ -677,7 +677,7 @@ $('package-format').addEventListener('change', () => {
   const text = $('package-format').value === 'text';
   $('text-editor').hidden = !text;
   $('drop-zone').hidden = text;
-  $('compose-title').textContent = text ? 'Share text' : 'Upload files';
+  $('compose-title').textContent = text ? 'Share secret' : 'Upload files';
   if (text) selected = [];
   else $('package-text').value = '';
   selectionView();

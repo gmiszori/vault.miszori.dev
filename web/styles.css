@@ -46,7 +46,7 @@ label:not(.check-row):not(.file-picker) { display: block; margin-bottom: 6px; fo
 .admin-actions { display: flex; justify-content: flex-end; }
 .admin-actions:has([hidden]) { display: none; }
 .admin-actions:has(button:not([hidden])) { padding-top: 24px; }
-.public-shell { max-width: 1100px; min-height: 100vh; min-height: 100dvh; margin: auto; padding: 32px 24px; display: flex; flex-direction: column; }
+.public-shell { max-width: 900px; min-height: 100vh; min-height: 100dvh; margin: auto; padding: 32px 24px; display: flex; flex-direction: column; }
 .public-main { width: 100%; margin-block: auto; }
 .admin-main { width: 100%; margin: auto; }
 .admin-body { max-width: 1100px; margin: auto; padding: 0 24px 40px; }

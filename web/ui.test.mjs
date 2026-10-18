@@ -1194,11 +1194,11 @@ test('pagehide during label encryption prevents late PATCH and plaintext renderi
   } finally { crypto.subtle.encrypt = originalEncrypt; ui.restore(); }
 });
 
-test('public and admin panels use matching narrower shells without branding headers', async () => {
+test('public cards use a narrower centered shell while admin width stays unchanged', async () => {
   const css = await readFile(new URL('./styles.css', import.meta.url), 'utf8');
   const html = await readFile(new URL('./admin.html', import.meta.url), 'utf8');
   assert.match(css, /\.admin-body\s*\{[^}]*max-width:\s*1100px;[^}]*padding:\s*0 24px 40px/);
-  assert.match(css, /\.public-shell\s*\{[^}]*max-width:\s*1100px;[^}]*min-height: 100dvh;[^}]*padding:\s*32px 24px;[^}]*display: flex/);
+  assert.match(css, /\.public-shell\s*\{[^}]*max-width:\s*900px;[^}]*min-height: 100dvh;[^}]*padding:\s*32px 24px;[^}]*display: flex/);
   assert.match(css, /\.public-main\s*\{[^}]*margin-block: auto/);
   assert.match(css, /\.login-panel, \.composer, \.result-panel, \.audit-panel\s*\{\s*width:\s*100%/);
   assert.doesNotMatch(css, /(?:\.composer|\.result-panel|\.login-panel|\.audit-panel)[^{]*\{[^}]*max-width/);
@@ -1387,7 +1387,10 @@ test('one-time text requires explicit view consent, renders literally without do
     await until(() => ui.$('package-state').textContent === 'Ready');
     assert.equal(claims, 0);
     assert.equal(ui.$('package-format').textContent, 'Plain TXT');
-    assert.equal(ui.$('download-button').textContent, 'View text');
+    assert.equal(ui.$('download-button').textContent, 'View secret');
+    assert.equal(ui.$('package-title').textContent, 'Secret ready to view');
+    assert.match(ui.$('warning-description').textContent, /Viewing this secret destroys/);
+    assert.match(ui.$('consent-text').textContent, /I understand that this secret can only be/);
     assert.equal(ui.$('download-button').disabled, true);
     assert.equal(ui.$('fallback-warning').hidden, true);
     ui.$('download-consent').checked = true;

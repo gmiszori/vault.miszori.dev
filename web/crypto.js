@@ -123,19 +123,19 @@ export function parseManifest(bytes) {
 }
 
 export function serializeText(value) {
-  if (typeof value !== 'string' || /\p{Cs}/u.test(value)) throw new Error('Text contains invalid Unicode.');
+  if (typeof value !== 'string' || /\p{Cs}/u.test(value)) throw new Error('Secret contains invalid Unicode.');
   const text = encoder.encode(value);
-  if (!text.byteLength || text.byteLength > MAX_TEXT_BYTES) throw new Error('Enter text up to 8 MiB in UTF-8.');
+  if (!text.byteLength || text.byteLength > MAX_TEXT_BYTES) throw new Error('Enter a secret up to 8 MiB in UTF-8.');
   const manifest = { version: 1, format: 'text', size: text.byteLength, chunkSize: CHUNK_SIZE };
   return { plaintext: encoder.encode(JSON.stringify(manifest)), text, bytes: text.byteLength, chunks: 2 };
 }
 
 export function parseTextManifest(bytes) {
-  if (bytes.byteLength > 1024) throw new Error('Invalid text manifest.');
+  if (bytes.byteLength > 1024) throw new Error('Invalid secret manifest.');
   let manifest;
   try { manifest = JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(bytes)); }
-  catch { throw new Error('Invalid text manifest.'); }
-  if (!manifest || manifest.version !== 1 || manifest.format !== 'text' || manifest.chunkSize !== CHUNK_SIZE || !Number.isSafeInteger(manifest.size) || manifest.size < 1 || manifest.size > MAX_TEXT_BYTES) throw new Error('Invalid text manifest.');
+  catch { throw new Error('Invalid secret manifest.'); }
+  if (!manifest || manifest.version !== 1 || manifest.format !== 'text' || manifest.chunkSize !== CHUNK_SIZE || !Number.isSafeInteger(manifest.size) || manifest.size < 1 || manifest.size > MAX_TEXT_BYTES) throw new Error('Invalid secret manifest.');
   return manifest;
 }
 

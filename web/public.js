@@ -249,7 +249,7 @@ async function viewText() {
   controller = new AbortController();
   const signal = controller.signal;
   $('cancel-download').hidden = false;
-  status('Decrypting text…');
+  status('Decrypting secret…');
   try {
     const key = await importKey(keyBytes);
     const token = await deriveClaimToken(keyBytes, route[1]);
@@ -269,21 +269,21 @@ async function viewText() {
     if (!response.ok) {
       unavailableResponse = [404, 409, 410].includes(response.status);
       await response.body?.cancel();
-      throw new Error(unavailableResponse ? 'This package is unavailable.' : 'Could not open the text package.');
+      throw new Error(unavailableResponse ? 'This package is unavailable.' : 'Could not open the secret.');
     }
     frames = new FramedReader(response.body);
     const manifestBytes = await decryptChunk(key, route[1], 0, await frames.record());
     const manifest = parseTextManifest(manifestBytes);
     manifestBytes.fill(0);
     plaintext = await decryptChunk(key, route[1], 1, await frames.record());
-    if (plaintext.byteLength !== manifest.size) throw new Error('Text size does not match its encrypted manifest.');
+    if (plaintext.byteLength !== manifest.size) throw new Error('Secret size does not match its encrypted manifest.');
     const text = new TextDecoder('utf-8', { fatal: true, ignoreBOM: true }).decode(plaintext);
     await frames.end();
     signal.throwIfAborted();
     if (attempt !== initialization) return;
     $('revealed-text').value = text;
     $('text-result').hidden = false;
-    $('package-title').textContent = 'Package text';
+    $('package-title').textContent = 'Secret';
     $('package-description').textContent = oneTime ? 'The server copy has been destroyed.' : '';
     $('consent-label').hidden = true;
     $('download-warning').hidden = true;
@@ -297,7 +297,7 @@ async function viewText() {
       available = Date.now() < expiresAt;
       packageState(available ? 'Ready' : 'Unavailable');
     }
-    status('Text decrypted.');
+    status('Secret decrypted.');
   } catch (error) {
     if (attempt !== initialization) return;
     clearText();
@@ -362,14 +362,14 @@ async function initialize() {
     packageFormat = info.format || 'files';
     const text = packageFormat === 'text';
     $('package-format').textContent = text ? 'Plain TXT' : 'ZIP archive';
-    $('package-title').textContent = text ? 'Package ready to view' : 'Package ready to download';
+    $('package-title').textContent = text ? 'Secret ready to view' : 'Package ready to download';
     $('warning-title').textContent = text ? 'One-time view' : 'One-time download';
-    $('warning-description').textContent = text ? 'Viewing this text destroys the server copy, even if opening fails or is cancelled. It cannot be opened again; copy the text before leaving.' : 'Starting the transfer claims and destroys the server copy, even if the download fails or is cancelled. It cannot be resumed; ask the sender for a new package.';
-    $('consent-text').textContent = text ? 'I understand this text can only be opened once, even if opening fails or I cancel.' : 'I understand this download cannot be repeated, even if it fails or I cancel.';
+    $('warning-description').textContent = text ? 'Viewing this secret destroys the server copy, even if opening fails or is cancelled. It cannot be opened again; copy the secret before leaving.' : 'Starting the transfer claims and destroys the server copy, even if the download fails or is cancelled. It cannot be resumed; ask the sender for a new package.';
+    $('consent-text').textContent = text ? 'I understand that this secret can only be opened once, even if opening fails or I cancel.' : 'I understand this download cannot be repeated, even if it fails or I cancel.';
     if (text) $('fallback-warning').hidden = true;
     $('download-warning').hidden = !oneTime;
     $('consent-label').hidden = !oneTime;
-    $('download-button').textContent = text ? 'View text' : oneTime ? 'Download and destroy' : 'Download';
+    $('download-button').textContent = text ? 'View secret' : oneTime ? 'Download and destroy' : 'Download';
     $('cancel-download').textContent = text ? (oneTime ? 'Cancel view (irreversible)' : 'Cancel view') : oneTime ? 'Cancel transfer (irreversible)' : 'Cancel transfer';
     $('fallback-description').textContent = oneTime ? 'This browser can save ZIP archives up to 128 MiB, including archive overhead. The encrypted size is unknown until you start and claim the one-time download. A larger package will be lost. For large or unknown sizes, use desktop Chrome or Edge with “Save As” support.' : 'This browser can save ZIP archives up to 128 MiB. For larger packages use a browser with streaming downloads, such as desktop Chrome or Edge. The package remains available until expiry.';
     available = true;
@@ -409,7 +409,7 @@ $('copy-text').addEventListener('click', async () => {
     if (attempt !== initialization || $('text-result').hidden) return;
     $('revealed-text').focus();
     $('revealed-text').select();
-    $('copy-text-status').textContent = 'Text selected. Use your browser’s Copy command.';
+    $('copy-text-status').textContent = 'Secret selected. Use your browser’s Copy command.';
   }
 });
 
