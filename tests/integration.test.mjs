@@ -242,3 +242,43 @@ print('Native Python ZIP reader verified every entry CRC, archive sizes/offsets,
     }
   }
 });
+
+test('reusable ciphertext survives repeated downloads and records every proof-authorized start privately', async () => {
+  const created = await adminFetch('packages', 'POST', JSON.stringify({ ttlSeconds: 3600, oneTime: false }));
+  assert.equal(created.status, 201);
+  const p = await protectPackage(await created.json());
+  try {
+    const ciphertext = randomBytes(128);
+    await upload(p, 0, ciphertext);
+    await finalize(p, 1);
+    const info = await (await fetch(`${pub}/api/packages/${p.id}`)).json();
+    assert.equal(info.oneTime, false);
+    assert.equal(info.openedIp, undefined);
+    const bad = await fetch(`${pub}/api/packages/${p.id}/consume`, { method: 'POST' });
+    assert.equal(bad.status, 404);
+    for (let n = 0; n < 3; n++) {
+      const response = await fetch(`${pub}/api/packages/${p.id}/consume`, { method: 'POST', headers: { 'X-Claim-Token': p.claimToken, 'User-Agent': n ? 'Mozilla/5.0 Chrome/130.0 Linux' : 'Mozilla/5.0 Version/18.0 Safari/605.1 Macintosh' } });
+      const parts = [];
+      for await (const record of records(response)) parts.push(record);
+      assert.deepEqual(Buffer.from(parts[0]), ciphertext);
+      assert.equal((await fetch(`${pub}/api/packages/${p.id}`)).status, 200);
+    }
+    const list = await (await adminFetch('packages')).json();
+    const item = list.packages.find(item => item.id === p.id);
+    assert.equal(item.status, 'ready');
+    assert.equal(item.retrievalCount, 3);
+    const activity = await (await adminFetch(`packages/${p.id}/retrievals?limit=2`)).json();
+    assert.equal(activity.retrievals.length, 2);
+    assert.ok(activity.retrievals.every(item => item.openedAt && item.openedIp && item.openedBrowser));
+    assert.equal(activity.retrievals[0].openedBrowser.browser, 'Safari');
+    assert.equal(activity.retrievals[1].openedBrowser.browser, 'Chrome');
+    assert.ok(activity.nextCursor);
+    const next = await (await adminFetch(`packages/${p.id}/retrievals?limit=2&cursor=${encodeURIComponent(activity.nextCursor)}`)).json();
+    assert.equal(next.retrievals.length, 1);
+    assert.equal(next.nextCursor, '');
+    assert.equal((await fetch(`${admin}/admin/api/packages/${p.id}/retrievals`)).status, 401);
+    assert.equal((await fetch(`${pub}/admin/api/packages/${p.id}/retrievals`, { headers: auth })).status, 404);
+  } finally {
+    await adminFetch(`packages/${p.id}`, 'DELETE');
+  }
+});

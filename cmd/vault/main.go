@@ -29,18 +29,22 @@ const maxChunks = 30000
 const maxPackageBytes int64 = 20*1024*1024*1024 + maxChunks*16 + 8*1024*1024
 
 type Package struct {
-	ID            string          `json:"id"`
-	Status        string          `json:"status"`
-	CreatedAt     time.Time       `json:"createdAt"`
-	ExpiresAt     time.Time       `json:"expiresAt"`
-	OpenedAt      *time.Time      `json:"openedAt,omitempty"`
-	OpenedIP      string          `json:"openedIp,omitempty"`
-	Chunks        int             `json:"chunks"`
-	Bytes         int64           `json:"bytes"`
-	TokenHash     string          `json:"-"`
-	ClaimHash     string          `json:"claimHash,omitempty"`
-	EncryptedName *EncryptedName  `json:"encryptedName,omitempty"`
-	OpenedBrowser *BrowserProfile `json:"openedBrowser,omitempty"`
+	ID             string          `json:"id"`
+	OneTime        bool            `json:"oneTime"`
+	RetrievalCount int64           `json:"retrievalCount"`
+	Status         string          `json:"status"`
+	CreatedAt      time.Time       `json:"createdAt"`
+	ExpiresAt      time.Time       `json:"expiresAt"`
+	OpenedAt       *time.Time      `json:"openedAt,omitempty"`
+	OpenedIP       string          `json:"openedIp,omitempty"`
+	Chunks         int             `json:"chunks"`
+	Bytes          int64           `json:"bytes"`
+	TokenHash      string          `json:"-"`
+	ClaimHash      string          `json:"claimHash,omitempty"`
+	EncryptedName  *EncryptedName  `json:"encryptedName,omitempty"`
+	OpenedBrowser  *BrowserProfile `json:"openedBrowser,omitempty"`
+	activeReads    int
+	auditBroken    bool
 }
 type diskPackage struct {
 	Package
@@ -110,20 +114,27 @@ func (s *Server) save(p *Package) error {
 	return d.Sync()
 }
 func (s *Server) purge(p *Package, status string) error {
+	// Make revocation durable before cleanup; reusable streams already admitted may finish.
+	p.Status = status
+	p.TokenHash = ""
+	if err := s.save(p); err != nil {
+		return err
+	}
+	if p.activeReads > 0 {
+		return nil
+	}
 	entries, err := os.ReadDir(s.dir(p.ID))
 	if err != nil {
 		return err
 	}
 	for _, e := range entries {
-		if e.Name() != "meta.json" {
+		if e.Name() != "meta.json" && e.Name() != retrievalLogName {
 			if err = os.RemoveAll(filepath.Join(s.dir(p.ID), e.Name())); err != nil {
 				return err
 			}
 		}
 	}
-	p.Status = status
-	p.TokenHash = ""
-	return s.save(p)
+	return nil
 }
 func newServer(root, user, setupToken, origin string, quota int64) (*Server, error) {
 	if user == "" {
@@ -151,7 +162,7 @@ func newServer(root, user, setupToken, origin string, quota int64) (*Server, err
 		if err != nil {
 			return nil, err
 		}
-		var d diskPackage
+		d := diskPackage{Package: Package{OneTime: true}}
 		if err = json.Unmarshal(b, &d); err != nil {
 			return nil, err
 		}
@@ -160,6 +171,9 @@ func newServer(root, user, setupToken, origin string, quota int64) (*Server, err
 		}
 		p := d.Package
 		p.TokenHash = d.TokenHash
+		if err = s.restoreRetrievalCount(&p); err != nil {
+			return nil, err
+		}
 		s.packages[p.ID] = &p
 	}
 	if err = s.initLabelKey(); err != nil {
@@ -169,8 +183,12 @@ func newServer(root, user, setupToken, origin string, quota int64) (*Server, err
 		return nil, err
 	}
 	for _, p := range s.packages {
-		if p.Status == "consuming" || p.Status == "uploading" {
-			if err = s.purge(p, "failed"); err != nil {
+		status := p.Status
+		if status == "consuming" || status == "uploading" {
+			status = "failed"
+		}
+		if status != "ready" {
+			if err = s.purge(p, status); err != nil {
 				return nil, err
 			}
 		}
@@ -190,7 +208,7 @@ func (s *Server) sweep() error {
 				return err
 			}
 		}
-		if p.Status != "ready" && p.Status != "uploading" && p.Status != "consuming" && now.Sub(p.ExpiresAt) > 90*24*time.Hour {
+		if p.activeReads == 0 && p.Status != "ready" && p.Status != "uploading" && p.Status != "consuming" && now.Sub(p.ExpiresAt) > 90*24*time.Hour {
 			if err := os.RemoveAll(s.dir(id)); err != nil {
 				return err
 			}
@@ -345,7 +363,7 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			fail(w, 404, "Package already viewed or does not exist")
 			return
 		}
-		writeJSON(w, 200, map[string]any{"status": "ready", "expiresAt": p.ExpiresAt})
+		writeJSON(w, 200, map[string]any{"status": "ready", "expiresAt": p.ExpiresAt, "oneTime": p.OneTime})
 		return
 	}
 	fail(w, 404, "Not found")
@@ -353,7 +371,7 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 func (s *Server) storageUsedLocked() int64 {
 	var used int64
 	for _, p := range s.packages {
-		if p.Status == "ready" || p.Status == "uploading" || p.Status == "consuming" {
+		if p.Status == "ready" || p.Status == "uploading" || p.Status == "consuming" || p.activeReads > 0 {
 			used += p.Bytes
 		}
 	}
@@ -381,7 +399,8 @@ func (s *Server) admin(w http.ResponseWriter, r *http.Request) {
 	}
 	if path == "packages" && r.Method == "POST" {
 		var req struct {
-			TTL int64 `json:"ttlSeconds"`
+			TTL     int64 `json:"ttlSeconds"`
+			OneTime *bool `json:"oneTime"`
 		}
 		if !decode(w, r, &req) {
 			return
@@ -402,7 +421,8 @@ func (s *Server) admin(w http.ResponseWriter, r *http.Request) {
 		}
 		now := s.now()
 		token := randomID()
-		p := &Package{ID: randomID(), Status: "uploading", CreatedAt: now, ExpiresAt: now.Add(time.Duration(req.TTL) * time.Second), TokenHash: hash(token)}
+		oneTime := req.OneTime == nil || *req.OneTime
+		p := &Package{ID: randomID(), OneTime: oneTime, Status: "uploading", CreatedAt: now, ExpiresAt: now.Add(time.Duration(req.TTL) * time.Second), TokenHash: hash(token)}
 		if err := os.Mkdir(s.dir(p.ID), 0700); err != nil {
 			fail(w, 500, "Storage unavailable")
 			return
@@ -413,7 +433,7 @@ func (s *Server) admin(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		s.packages[p.ID] = p
-		writeJSON(w, 201, map[string]any{"id": p.ID, "uploadToken": token, "expiresAt": p.ExpiresAt})
+		writeJSON(w, 201, map[string]any{"id": p.ID, "uploadToken": token, "expiresAt": p.ExpiresAt, "oneTime": p.OneTime})
 		return
 	}
 	parts := strings.Split(path, "/")
@@ -424,6 +444,10 @@ func (s *Server) admin(w http.ResponseWriter, r *http.Request) {
 	p := s.packages[parts[1]]
 	if p == nil {
 		fail(w, 404, "Not found")
+		return
+	}
+	if len(parts) == 3 && parts[2] == "retrievals" && r.Method == "GET" {
+		s.retrievals(w, r, p)
 		return
 	}
 	if len(parts) == 2 && r.Method == "PATCH" {
@@ -528,36 +552,50 @@ func (s *Server) consume(w http.ResponseWriter, r *http.Request, id string) {
 		fail(w, 404, "Package already viewed or does not exist")
 		return
 	}
-	now := s.now()
-	p.Status = "consuming"
-	p.OpenedAt = &now
-	p.OpenedIP = peerIP(r)
-	p.OpenedBrowser = browserProfile(r)
+	retrieval := Retrieval{OpenedAt: s.now(), OpenedIP: peerIP(r), OpenedBrowser: browserProfile(r)}
+	if err := s.appendRetrieval(p, retrieval); err != nil {
+		s.mu.Unlock()
+		fail(w, 500, "Storage unavailable")
+		return
+	}
+	if p.OneTime {
+		p.Status = "consuming"
+	}
+	p.OpenedAt = &retrieval.OpenedAt
+	p.OpenedIP = retrieval.OpenedIP
+	p.OpenedBrowser = retrieval.OpenedBrowser
 	if err := s.save(p); err != nil {
-		p.Status = "failed"
 		_ = s.purge(p, "failed")
 		s.mu.Unlock()
 		fail(w, 500, "Storage unavailable")
 		return
 	}
+	p.activeReads++
+	oneTime, chunks, size := p.OneTime, p.Chunks, p.Bytes
 	s.mu.Unlock()
 	completed := false
 	defer func() {
 		s.mu.Lock()
 		defer s.mu.Unlock()
-		status := "failed"
-		if completed {
-			status = "consumed"
+		p.activeReads--
+		status := p.Status
+		if oneTime {
+			status = "failed"
+			if completed {
+				status = "consumed"
+			}
 		}
-		if err := s.purge(p, status); err != nil {
-			log.Print("ERROR: ciphertext cleanup failed; manual intervention required")
+		if oneTime || (p.activeReads == 0 && status != "ready") {
+			if err := s.purge(p, status); err != nil {
+				log.Print("ERROR: ciphertext cleanup failed; manual intervention required")
+			}
 		}
 	}()
 	w.Header().Set("Content-Type", "application/octet-stream")
 	w.Header().Set("Content-Disposition", `attachment; filename="encrypted-package.bin"`)
-	w.Header().Set("Content-Length", strconv.FormatInt(p.Bytes+int64(4*p.Chunks), 10))
+	w.Header().Set("Content-Length", strconv.FormatInt(size+int64(4*chunks), 10))
 	controller := http.NewResponseController(w)
-	for n := 0; n < p.Chunks; n++ {
+	for n := 0; n < chunks; n++ {
 		if r.Context().Err() != nil {
 			return
 		}
@@ -570,10 +608,12 @@ func (s *Server) consume(w http.ResponseWriter, r *http.Request, id string) {
 			f.Close()
 			return
 		}
-		// Unlink before sending: no later request can reopen even a partially delivered record.
-		if err = os.Remove(s.chunk(id, n)); err != nil {
-			f.Close()
-			return
+		// One-time records are unlinked before sending, even for interrupted transfers.
+		if oneTime {
+			if err = os.Remove(s.chunk(id, n)); err != nil {
+				f.Close()
+				return
+			}
 		}
 		var header [4]byte
 		binary.BigEndian.PutUint32(header[:], uint32(info.Size()))

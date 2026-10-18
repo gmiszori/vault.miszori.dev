@@ -44,6 +44,7 @@ function clearSession(status = '') {
   authorization = '';
   publicOrigin = '';
   clearNames();
+  clearRetrievals();
   uploadController?.abort();
   uploadController = null;
   currentPackage = null;
@@ -278,7 +279,7 @@ function addFiles(incoming) {
 
 function setBusy(value) {
   uploading = value;
-  for (const id of ['file-input', 'folder-input', 'clear-files', 'ttl', 'custom-ttl', 'logout']) $(id).disabled = value;
+  for (const id of ['file-input', 'folder-input', 'clear-files', 'ttl', 'custom-ttl', 'package-mode', 'logout']) $(id).disabled = value;
   $('package-name').disabled = value || !nameKey;
   $('drop-zone').classList.toggle('disabled', value);
   $('upload-progress').hidden = !value;
@@ -297,6 +298,7 @@ async function upload() {
   if (uploading || !selected.length) return;
   let validated;
   let ttlSeconds;
+  const oneTime = $('package-mode').value !== 'until-expiry';
   try {
     if (nameKey) validateName($('package-name').value);
     validated = serializeManifest(describeFiles(selected));
@@ -324,7 +326,7 @@ async function upload() {
     const key = await importKey(rawKey);
     signal.throwIfAborted();
     // Let creation return its ID even if cancellation is requested, so cleanup can delete it.
-    const created = await (await api('/packages', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ ttlSeconds }) })).json();
+    const created = await (await api('/packages', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ ttlSeconds, oneTime }) })).json();
     if (session !== loginAttempt) return;
     if (typeof created.id !== 'string' || !/^[A-Za-z0-9_-]{1,128}$/.test(created.id)) throw new Error('The server returned an invalid package identifier. Check Transfer activity for an incomplete package.');
     currentPackage = created.id;
@@ -370,7 +372,7 @@ async function upload() {
     });
     signal.throwIfAborted();
     $('share-link').value = `${publicOrigin}/package/${currentPackage}#${encodeKey(rawKey)}`;
-    $('link-expiry').textContent = `Expires ${new Date(created.expiresAt).toLocaleString()}, or immediately after it is claimed.`;
+    $('link-expiry').textContent = `Expires ${new Date(created.expiresAt).toLocaleString()}${oneTime ? ', or immediately after it is claimed.' : '. Available for repeated downloads until then.'}`;
     $('result-panel').hidden = false;
     message('upload-status', 'Encrypted, uploaded, and ready. Copy the share link below.');
     selected = [];
@@ -447,6 +449,58 @@ async function refreshList() {
   }
 }
 
+let retrievalTarget = null;
+let retrievalCursor = '';
+let retrievalAttempt = 0;
+
+function clearRetrievals() {
+  ++retrievalAttempt;
+  retrievalTarget = null;
+  retrievalCursor = '';
+  $('retrieval-body').replaceChildren();
+  $('retrieval-package').textContent = '';
+  message('retrieval-status', '');
+  $('retrieval-next').hidden = true;
+  $('retrieval-next').disabled = false;
+  if ($('retrieval-dialog').open) $('retrieval-dialog').close();
+}
+
+async function loadRetrievals() {
+  const id = retrievalTarget;
+  if (!id || !authorization) return;
+  const attempt = ++retrievalAttempt;
+  const session = loginAttempt;
+  $('retrieval-next').disabled = true;
+  message('retrieval-status', 'Loading…');
+  try {
+    const data = await (await api(`/packages/${encodeURIComponent(id)}/retrievals?cursor=${encodeURIComponent(retrievalCursor || '0')}&limit=100`)).json();
+    if (session !== loginAttempt || attempt !== retrievalAttempt || id !== retrievalTarget) return;
+    if (!Array.isArray(data.retrievals) || data.retrievals.length > 100 || typeof data.nextCursor !== 'string') throw new Error('Invalid activity response.');
+    const fragment = document.createDocumentFragment();
+    for (const item of data.retrievals) {
+      const row = document.createElement('tr');
+      cell(row, date(item.openedAt));
+      cell(row, typeof item.openedIp === 'string' ? item.openedIp : '—');
+      const profile = item.openedBrowser;
+      const details = cell(row, profile ? [profile.browser, profile.os, profile.deviceType].map(value => typeof value === 'string' ? value : '—').join(' / ') : '—');
+      if (typeof profile?.userAgent === 'string') details.title = profile.userAgent;
+      fragment.append(row);
+    }
+    $('retrieval-body').replaceChildren(fragment);
+    retrievalCursor = data.nextCursor;
+    $('retrieval-next').hidden = !retrievalCursor;
+    message('retrieval-status', data.retrievals.length ? 'Started transfers (including interrupted downloads).' : 'No retrievals.');
+  } catch (error) {
+    if (session === loginAttempt && attempt === retrievalAttempt) message('retrieval-status', error.message || 'Could not load activity.', true);
+  } finally {
+    if (session === loginAttempt && attempt === retrievalAttempt) $('retrieval-next').disabled = false;
+  }
+}
+
+$('close-retrievals').addEventListener('click', clearRetrievals);
+$('retrieval-dialog').addEventListener('close', clearRetrievals);
+$('retrieval-next').addEventListener('click', loadRetrievals);
+
 function packageActions(item, knownStatus, epoch) {
   const id = String(item.id);
   const action = document.createElement('td');
@@ -462,6 +516,21 @@ function packageActions(item, knownStatus, epoch) {
       $('delete-description').textContent = `Package ${item.id}`;
       $('delete-dialog').returnValue = '';
       $('delete-dialog').showModal();
+    });
+    action.append(button);
+  }
+  if ((item.retrievalCount > 0 || item.openedAt) && /^[A-Za-z0-9_-]{1,128}$/.test(id)) {
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.className = 'text-button';
+    button.textContent = `Activity (${Number.isSafeInteger(item.retrievalCount) ? item.retrievalCount : 1})`;
+    button.addEventListener('click', () => {
+      if (!authorization || epoch !== nameEpoch) return;
+      clearRetrievals();
+      retrievalTarget = id;
+      $('retrieval-package').textContent = id;
+      $('retrieval-dialog').showModal();
+      loadRetrievals();
     });
     action.append(button);
   }
@@ -514,6 +583,10 @@ async function renderList() {
     state.textContent = knownStatus;
     const td = document.createElement('td');
     td.append(state);
+    const mode = document.createElement('span');
+    mode.className = 'table-secondary';
+    mode.textContent = item.oneTime === false ? 'Until expiry' : 'One-time';
+    td.append(mode);
     row.append(td);
     cell(row, date(item.createdAt), `Expires ${date(item.expiresAt)}`);
     cell(row, Number.isSafeInteger(item.bytes) && item.bytes >= 0 ? formatBytes(item.bytes) : '—', `${Number.isSafeInteger(item.chunks) ? item.chunks.toLocaleString() : '—'} records`);

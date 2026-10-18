@@ -106,8 +106,8 @@ func TestOneTimeDownload(t *testing.T) {
 		t.Fatal("missing audit data")
 	}
 	entries, _ := os.ReadDir(s.dir(id))
-	if len(entries) != 1 || entries[0].Name() != "meta.json" {
-		t.Fatal("ciphertext not deleted")
+	if len(entries) != 2 || entries[0].Name() != "meta.json" || entries[1].Name() != retrievalLogName {
+		t.Fatal("ciphertext not deleted or audit log lost")
 	}
 	if request(s, "POST", "/api/packages/"+id+"/consume", nil, false, "").Code != 404 {
 		t.Fatal("second download allowed")

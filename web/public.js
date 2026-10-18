@@ -11,6 +11,7 @@ const supportsLocalStreaming = window.isSecureContext && Boolean(globalThis.navi
 let blobFallbackOffered = !supportsLocalStreaming;
 let keyBytes;
 let available = false;
+let oneTime = true;
 let busy = false;
 let expiresAt = 0;
 let controller;
@@ -24,7 +25,7 @@ function status(message, error = false) {
 
 function updateButton() {
   $('download-consent').disabled = busy || !available;
-  $('download-button').disabled = !available || busy || !$('download-consent').checked;
+  $('download-button').disabled = !available || busy || (oneTime && !$('download-consent').checked);
 }
 
 function packageState(label) {
@@ -66,7 +67,7 @@ function memorySink(filename) {
 }
 
 async function download() {
-  if (!available || busy || !$('download-consent').checked) return;
+  if (!available || busy || (oneTime && !$('download-consent').checked)) return;
   if (Date.now() >= expiresAt) {
     available = false;
     packageState('Unavailable');
@@ -80,11 +81,17 @@ async function download() {
   const id = route[1];
   const filename = `vault-${id.slice(0, 12)}.zip`;
   let consumed = false;
+  let unavailableResponse = false;
   let sink;
   let frames;
   let boundedFallback = false;
   let localStream = false;
   controller = new AbortController();
+  $('download-meter').classList.toggle('is-complete', false);
+  $('download-meter').value = 0;
+  $('download-percent').textContent = '0%';
+  $('save-archive').hidden = true;
+  if (blobURL) { URL.revokeObjectURL(blobURL); blobURL = null; }
   try {
     // Invoke the picker during the click gesture, before any asynchronous work.
     const destination = supportsStreaming ? await window.showSaveFilePicker({
@@ -99,7 +106,7 @@ async function download() {
           blobFallbackOffered = true;
           $('fallback-warning').hidden = false;
           $('download-consent').checked = false;
-          status('Streaming downloads are unavailable. The fallback is limited to 128 MiB, and encrypted package sizes cannot be checked before claiming. Nothing has been claimed. For larger or unknown packages, use a browser with working streaming downloads. To accept this limit, check consent again and press Download.');
+          status(oneTime ? 'Streaming downloads are unavailable. The fallback is limited to 128 MiB, and encrypted package sizes cannot be checked before claiming. Nothing has been claimed. For larger or unknown packages, use a browser with working streaming downloads. To accept this limit, check consent again and press Download.' : 'Streaming downloads are unavailable. The fallback is limited to 128 MiB. Press Download again to try the fallback, or use a browser with streaming support.');
           return;
         }
       }
@@ -140,7 +147,8 @@ async function download() {
     }
     if (!response.ok) {
       await response.body?.cancel();
-      throw new Error(response.status === 404 || response.status === 409 || response.status === 410
+      unavailableResponse = response.status === 404 || response.status === 409 || response.status === 410;
+      throw new Error(unavailableResponse
         ? 'This package does not exist, or it has already been claimed, deleted, or expired.'
         : 'The server could not start the transfer. Ask the sender to check its status.');
     }
@@ -148,7 +156,7 @@ async function download() {
     const { manifest, bytes, chunks } = parseManifest(await decryptChunk(key, id, 0, await frames.record()));
     const size = archiveSize(manifest.files);
     if (boundedFallback && size > MEMORY_LIMIT) {
-      throw new Error('This archive is larger than the 128 MiB browser limit. No file data was saved. The one-time transfer has already been claimed; ask the sender for a new link and use a browser with supported streaming downloads, such as desktop Chrome or Edge.');
+      throw new Error(oneTime ? 'This archive is larger than the 128 MiB browser limit. No file data was saved. The one-time transfer has already been claimed; ask the sender for a new link and use a browser with supported streaming downloads, such as desktop Chrome or Edge.' : 'This archive exceeds the 128 MiB browser limit. Use a browser with streaming downloads. The package remains available until expiry.');
     }
     if (localStream) await sink.initialize(filename, size);
     const archive = new ZipWriter(sink);
@@ -181,14 +189,28 @@ async function download() {
     $('download-button').hidden = true;
     $('consent-label').hidden = true;
     $('download-warning').hidden = true;
-    keyBytes.fill(0);
-    keyBytes = null;
+    if (oneTime) {
+      keyBytes.fill(0);
+      keyBytes = null;
+    } else {
+      available = Date.now() < expiresAt;
+      packageState(available ? 'Ready' : 'Unavailable');
+      $('package-title').textContent = 'Package ready to download';
+      $('package-description').textContent = 'Your files are in the ZIP archive.';
+      $('availability').textContent = `Until ${new Date(expiresAt).toLocaleString()}`;
+      $('download-button').hidden = !available;
+    }
   } catch (error) {
     const aborted = error.name === 'AbortError';
     status(consumed
       ? `${aborted ? 'Transfer cancelled.' : error.message} This transfer cannot be resumed. Ask the sender for a new package.`
       : aborted ? 'Save cancelled. Your package has not been claimed.' : `Could not prepare a save destination. ${error.message} Your package has not been claimed.`, !aborted || consumed);
-    if (consumed) {
+    if (!oneTime) {
+      available = !unavailableResponse && Boolean(keyBytes) && Date.now() < expiresAt;
+      packageState(available ? 'Ready' : 'Unavailable');
+      status(`${aborted ? 'Transfer cancelled.' : error.message}${available ? ' You can try again before expiry.' : ''}`, !aborted);
+      if (!available) { keyBytes?.fill(0); keyBytes = null; }
+    } else if (consumed) {
       packageState('Unavailable');
       $('package-title').textContent = 'Package unavailable';
       $('package-description').textContent = 'This transfer has stopped and cannot be resumed. Ask the sender for a new package.';
@@ -245,6 +267,13 @@ async function initialize() {
     if (attempt !== initialization) return;
     expiresAt = Date.parse(info.expiresAt);
     if (info.status !== 'ready' || !Number.isFinite(expiresAt) || expiresAt <= Date.now()) throw new Error('');
+    if (info.oneTime !== undefined && typeof info.oneTime !== 'boolean') throw new Error('Invalid package mode.');
+    oneTime = info.oneTime !== false;
+    $('download-warning').hidden = !oneTime;
+    $('consent-label').hidden = !oneTime;
+    $('download-button').textContent = oneTime ? 'Download and destroy' : 'Download';
+    $('cancel-download').textContent = oneTime ? 'Cancel transfer (irreversible)' : 'Cancel transfer';
+    $('fallback-description').textContent = oneTime ? 'This browser can save ZIP archives up to 128 MiB, including archive overhead. The encrypted size is unknown until you start and claim the one-time download. A larger package will be lost. For large or unknown sizes, use desktop Chrome or Edge with “Save As” support.' : 'This browser can save ZIP archives up to 128 MiB. For larger packages use a browser with streaming downloads, such as desktop Chrome or Edge. The package remains available until expiry.';
     available = true;
     packageState('Ready');
     $('availability').textContent = `Until ${new Date(expiresAt).toLocaleString()}`;

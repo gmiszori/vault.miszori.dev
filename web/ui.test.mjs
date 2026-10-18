@@ -577,7 +577,7 @@ test('admin validates upload paths, encrypts sequential records, finalizes and f
   const ui = await signedInAdmin(adminFetcher(async (path, options) => {
     uploads.push([path, options]);
     if (options.method === 'POST' && path.endsWith('/packages')) {
-      assert.deepEqual(JSON.parse(options.body), { ttlSeconds: 86400 });
+      assert.deepEqual(JSON.parse(options.body), { ttlSeconds: 86400, oneTime: true });
       return json({ id: 'pkg-123', uploadToken: 'token', expiresAt: '2099-01-01T00:00:00Z' });
     }
     if (options.method === 'PUT') {
@@ -1255,4 +1255,107 @@ test('enrollment rejects reusing the server-known setup token before deriving or
     assert.equal(ui.$('audit-body').children.length, 0);
     assert.equal(ui.$('login-button').disabled, false);
   } finally { crypto.subtle.deriveBits = originalDerive; ui.restore(); }
+});
+
+test('reusable packages hide destructive consent and can download repeatedly without losing the key', async () => {
+  const data = await packageStream(files, [content]);
+  let claims = 0;
+  const ui = await harness('public', async (_, options) => {
+    if (options.method === 'POST') { claims++; return new Response(data.body); }
+    return json({ status: 'ready', oneTime: false, expiresAt: '2099-01-01T00:00:00Z' });
+  }, { hash: `#${encodeKey(data.raw)}` });
+  try {
+    await until(() => !ui.$('download-button').disabled);
+    assert.equal(ui.$('download-warning').hidden, true);
+    assert.equal(ui.$('consent-label').hidden, true);
+    assert.equal(ui.$('download-consent').checked, false);
+    assert.equal(ui.$('download-button').textContent, 'Download');
+    assert.doesNotMatch(ui.$('fallback-description').textContent, /lost|one-time/);
+    for (let i = 0; i < 2; i++) {
+      await ui.$('download-button').dispatch('click');
+      assert.equal(ui.$('download-button').disabled, false);
+      assert.equal(ui.$('download-button').hidden, false);
+      assert.equal(ui.$('download-meter').classList.contains('is-complete'), true);
+      assert.doesNotMatch(ui.$('package-description').textContent, /destroyed/);
+    }
+    assert.equal(claims, 2);
+    assert.equal(ui.blobs.length, 2);
+    assertZip(Buffer.from(await ui.blobs[1].arrayBuffer()), files, [content, new Uint8Array()]);
+  } finally { ui.restore(); }
+});
+
+test('failed reusable downloads retain the key for retry but a missing package disables further attempts', async () => {
+  const data = await packageStream(files, [content]);
+  let mode = 'network';
+  const ui = await harness('public', async (_, options) => {
+    if (!options.method) return json({ status: 'ready', oneTime: false, expiresAt: '2099-01-01T00:00:00Z' });
+    if (mode === 'network') throw new TypeError('Network failed');
+    if (mode === 'missing') return new Response(null, { status: 404 });
+    return new Response(data.body);
+  }, { hash: `#${encodeKey(data.raw)}` });
+  try {
+    await until(() => !ui.$('download-button').disabled);
+    await ui.$('download-button').dispatch('click');
+    assert.equal(ui.$('download-button').disabled, false);
+    assert.match(ui.$('download-status').textContent, /try again before expiry/);
+    assert.doesNotMatch(ui.$('download-status').textContent, /cannot be resumed/);
+    mode = 'success';
+    await ui.$('download-button').dispatch('click');
+    assert.equal(ui.blobs.length, 1);
+    mode = 'missing';
+    await ui.$('download-button').dispatch('click');
+    assert.equal(ui.$('download-button').disabled, true);
+    assert.equal(ui.$('package-state').textContent, 'Unavailable');
+  } finally { ui.restore(); }
+});
+
+test('admin sends selected reusable mode and displays non-destructive link expiry', async () => {
+  let createBody;
+  const ui = await signedInAdmin(adminFetcher(async (path, options) => {
+    if (options.method === 'POST' && path.endsWith('/packages')) {
+      createBody = JSON.parse(options.body);
+      return json({ id: 'pkg-123', uploadToken: 'token', expiresAt: '2099-01-01T00:00:00Z' });
+    }
+    return new Response(null, { status: 204 });
+  }));
+  try {
+    ui.$('package-mode').value = 'until-expiry';
+    ui.$('file-input').files = [new File(['hello'], 'hello.txt', { lastModified: 0 })];
+    await ui.$('file-input').dispatch('change');
+    await ui.$('upload-button').dispatch('click');
+    assert.deepEqual(createBody, { ttlSeconds: 86400, oneTime: false });
+    assert.match(ui.$('link-expiry').textContent, /repeated downloads/);
+    assert.doesNotMatch(ui.$('link-expiry').textContent, /claimed/);
+  } finally { ui.restore(); }
+});
+
+test('retrieval activity is paginated, rendered safely, and cleared on signout including late results', async () => {
+  let resolveLate;
+  const calls = [];
+  const ui = await signedInAdmin(async path => {
+    if (path.endsWith('/config')) return json({ publicOrigin: 'https://vault.example', labelKey });
+    if (path.includes('/retrievals?')) {
+      calls.push(path);
+      if (path.includes('cursor=next')) return new Promise(resolve => { resolveLate = resolve; });
+      return json({ retrievals: [{ openedAt: '2026-01-01T00:00:00Z', openedIp: '<script>bad</script>', openedBrowser: { browser: 'Chrome', os: 'Linux', deviceType: 'desktop' } }], nextCursor: 'next' });
+    }
+    return json({ packages: [{ id: 'pkg-123', status: 'ready', oneTime: false, retrievalCount: 101 }] });
+  });
+  try {
+    const row = ui.$('audit-body').children[0];
+    assert.equal(row.children[1].children[1].textContent, 'Until expiry');
+    const activity = row.children[5].children.find(button => button.textContent === 'Activity (101)');
+    await activity.dispatch('click');
+    await until(() => ui.$('retrieval-body').children.length === 1);
+    assert.equal(ui.$('retrieval-body').children[0].children[1].children[0].textContent, '<script>bad</script>');
+    assert.equal(ui.$('retrieval-next').hidden, false);
+    const next = ui.$('retrieval-next').dispatch('click');
+    await until(() => Boolean(resolveLate));
+    await ui.$('logout').dispatch('click');
+    resolveLate(json({ retrievals: [{ openedIp: 'private' }], nextCursor: '' }));
+    await next;
+    assert.equal(ui.$('retrieval-body').children.length, 0);
+    assert.equal(ui.$('retrieval-dialog').open, false);
+    assert.match(calls[1], /cursor=next&limit=100/);
+  } finally { ui.restore(); }
 });

@@ -39,6 +39,7 @@
         <div class="upload-options">
           <div><label for="ttl">Expires after</label><select id="ttl" aria-describedby="expiry-help"><option value="3600">1 hour</option><option value="86400" selected>24 hours</option><option value="259200">3 days</option><option value="604800">7 days</option><option value="2592000">30 days</option><option value="custom">Custom duration</option></select><p id="expiry-help" class="fine-print">Includes upload time.</p></div>
           <div><label for="package-name">Package name (optional)</label><input id="package-name" type="text" autocomplete="off" spellcheck="false" aria-describedby="name-help" disabled><p id="name-help" class="fine-print">Admin only · Up to 120 characters.</p></div>
+          <div><label for="package-mode">Availability</label><select id="package-mode"><option value="once" selected>One-time download</option><option value="until-expiry">Available until expiry</option></select></div>
           <div id="custom-ttl-field" hidden><label for="custom-ttl">Minutes (1–43,200)</label><input id="custom-ttl" type="number" min="1" max="43200" step="1" value="60"></div>
         </div>
         <button id="upload-button" class="button primary full-width" type="button" disabled>Encrypt and create link</button>
@@ -64,6 +65,7 @@
       </section>
     </div>
   </main>
+  <dialog id="retrieval-dialog" aria-labelledby="retrieval-title"><h2 id="retrieval-title">Download activity</h2><p id="retrieval-package" class="fine-print"></p><p id="retrieval-status" class="status-message" role="status"></p><div class="table-scroll"><table><thead><tr><th scope="col">Started</th><th scope="col">IP</th><th scope="col">Browser / device</th></tr></thead><tbody id="retrieval-body"></tbody></table></div><div class="dialog-actions"><button id="retrieval-next" class="button quiet" type="button" hidden>Next page</button><button id="close-retrievals" class="button primary" type="button">Close</button></div></dialog>
   <dialog id="name-dialog"><form id="rename-form" autocomplete="off"><h2>Name package</h2><label for="rename-name">Private name (empty removes it)</label><input id="rename-name" type="text" autocomplete="off" spellcheck="false"><p id="rename-status" class="status-message" role="status"></p><div class="dialog-actions"><button id="cancel-name" class="button quiet" type="button">Cancel</button><button id="save-name" class="button primary" type="submit">Save name</button></div></form></dialog>
   <dialog id="delete-dialog"><form method="dialog"><h2>Delete this package?</h2><p id="delete-description"></p><p>The link will stop working. This cannot be undone.</p><div class="dialog-actions"><button class="button quiet" value="cancel">Keep package</button><button id="confirm-delete" class="button destructive" value="confirm">Delete package</button></div></form></dialog>
 </body>

@@ -142,7 +142,9 @@ td { min-width: 100px; }
 .empty-state p { margin-bottom: 0; }
 dialog { width: min(440px, calc(100% - 32px)); max-height: calc(100% - 32px); overflow: auto; padding: 24px; color: var(--text); background: var(--surface); border: 1px solid var(--line); border-radius: 10px; }
 dialog::backdrop { background: #000b; }
-#delete-description { overflow-wrap: anywhere; }
+#delete-description, #retrieval-package { overflow-wrap: anywhere; }
+#retrieval-dialog { width: min(760px, calc(100% - 32px)); }
+#retrieval-dialog .table-scroll { margin-bottom: 16px; }
 .dialog-actions { display: flex; justify-content: flex-end; flex-wrap: wrap; gap: 12px; }
 @media (max-width: 540px) {
   .public-shell { padding: 20px 16px; }
