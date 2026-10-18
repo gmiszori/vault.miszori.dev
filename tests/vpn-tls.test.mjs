@@ -98,6 +98,11 @@ test('production VPN IP serves admin while public listeners abort IP and unknown
     assert.equal(packagePage.status, 200);
     assert.match(packagePage.body, /Checking package availability/);
     assert.equal((await request(publicPort, '/public.js', 'vault.example', ca)).status, 200);
+    for (const [port, host, sni] of [[publicPort, 'vault.example', true], [vpnPort, '10.0.0.1', false]]) {
+      const icon = await request(port, '/share-icon.png', host, ca, sni);
+      assert.equal(icon.status, 200);
+      assert.match(icon.headers['content-type'], /image\/png/);
+    }
     const publicRedirect = await plainRequest(publicPlainPort, '/package/example', 'vault.example');
     assert.equal(publicRedirect.statusCode, 308);
     assert.equal(publicRedirect.headers.location, 'https://vault.example/package/example');

@@ -745,11 +745,24 @@ test('deployment and module defaults consistently use the vault namespace', asyn
   assert.match(docker, /ENTRYPOINT \["\/vault"\]/);
 });
 
-test('share artwork includes the generic system description without adding card description text', async () => {
+test('messaging previews preserve the wide banner and offer a separate square icon', async () => {
   const generator = await readFile(new URL('../tools/generate-preview.py', import.meta.url), 'utf8');
   const html = await readFile(new URL('./index.html', import.meta.url), 'utf8');
+  for (const [name, width, height] of [['share-preview.png', 1200, 630], ['share-icon.png', 1024, 1024]]) {
+    const png = await readFile(new URL(`./${name}`, import.meta.url));
+    assert.deepEqual([...png.subarray(0, 8)], [137, 80, 78, 71, 13, 10, 26, 10]);
+    assert.equal(png.readUInt32BE(16), width);
+    assert.equal(png.readUInt32BE(20), height);
+  }
   assert.ok(generator.includes('"Encrypted file and secret sharing system."'));
-  assert.equal((html.match(/share-preview\.png\?v=5/g) || []).length, 2);
+  assert.equal((html.match(/share-preview\.png\?v=7/g) || []).length, 2);
+  assert.match(html, /property="og:image:width" content="1200"/);
+  assert.match(html, /property="og:image:height" content="630"/);
+  assert.match(html, /property="og:image:width" content="1024"/);
+  assert.match(html, /property="og:image:height" content="1024"/);
+  assert.ok(html.indexOf('/share-preview.png') < html.indexOf('/share-icon.png'));
+  assert.match(html, /<link rel="apple-touch-icon" href="\/share-icon.png">/);
+  assert.match(html, /name="twitter:card" content="summary_large_image"/);
   assert.match(html, /property="og:description" content=""/);
   assert.match(html, /name="twitter:description" content=""/);
 });
@@ -843,7 +856,7 @@ test('HTML entrypoints reference only the agreed self-hosted assets and contain 
     assert.match(html, /Content-Security-Policy/);
     const references = [...html.matchAll(/(?:src|href)="([^"]+)"/g)].map(match => match[1]);
     assert.match(html, /<link rel="icon" type="image\/svg\+xml" href="\/favicon.svg">/);
-    const allowed = new Set(['/styles.css', '/public.js', '/admin.js', '/favicon.svg', '/', '/admin/', '#main']);
+    const allowed = new Set(['/styles.css', '/public.js', '/admin.js', '/favicon.svg', '/share-icon.png', '/', '/admin/', '#main']);
     for (const reference of references) assert.ok(allowed.has(reference), `Allowed asset or navigation: ${reference}`);
   }
 });
