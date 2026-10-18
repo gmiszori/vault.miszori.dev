@@ -66,7 +66,7 @@ func TestPublicAndAdminDiscoveryBudgetsAreIndependent(t *testing.T) {
 }
 
 func TestSetupBudgetIsIndependentOfPublicTraffic(t *testing.T) {
-	s, err := newServer(t.TempDir(), "admin", testSetupToken, "https://drive.example", 100*1024*1024)
+	s, err := newServer(t.TempDir(), "admin", testSetupToken, "https://vault.example", 100*1024*1024)
 	if err != nil {
 		t.Fatal(err)
 	}

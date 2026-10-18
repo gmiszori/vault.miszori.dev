@@ -159,7 +159,7 @@ test('optional large transfer produces a native-compatible streaming ZIP64 archi
   const mib = Number(process.env.LARGE_TEST_MIB); assert.ok(Number.isInteger(mib) && mib > 0 && mib <= 20480);
   const recordDelay = Number(process.env.SLOW_RECORD_MS || 0);
   assert.ok(Number.isInteger(recordDelay) && recordDelay >= 0 && recordDelay <= 10000);
-  const directory = await mkdtemp(join(tmpdir(), 'drive-zip-test-'));
+  const directory = await mkdtemp(join(tmpdir(), 'vault-zip-test-'));
   const filename = join(directory, 'package.zip');
   let p;
   let handle;

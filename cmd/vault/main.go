@@ -608,7 +608,7 @@ func main() {
 	if err != nil {
 		log.Fatal("Invalid resource limits: ", err)
 	}
-	origin := env("PUBLIC_ORIGIN", "https://drive.miszori.dev")
+	origin := env("PUBLIC_ORIGIN", "https://vault.miszori.dev")
 	quota, err := strconv.ParseInt(env("MAX_STORAGE_BYTES", "107374182400"), 10, 64)
 	if err != nil || quota < maxChunk {
 		log.Fatal("Invalid MAX_STORAGE_BYTES")

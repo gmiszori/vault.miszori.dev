@@ -10,8 +10,8 @@ const password = 'a strong random admin password 東京🔒';
 
 test('password-derived authentication and names match independent PBKDF2/HKDF domains', async () => {
   const root = pbkdf2Sync(password, salt, 600000, 32, 'sha256');
-  const auth = Buffer.from(hkdfSync('sha256', root, salt, 'drive.miszori.dev:admin-auth:v1', 32));
-  const names = Buffer.from(hkdfSync('sha256', root, salt, 'drive.miszori.dev:admin-names:v1', 32));
+  const auth = Buffer.from(hkdfSync('sha256', root, salt, 'vault.miszori.dev:admin-auth:v1', 32));
+  const names = Buffer.from(hkdfSync('sha256', root, salt, 'vault.miszori.dev:admin-names:v1', 32));
   const keys = await deriveAdminKeys(password, config);
   assert.equal(keys.authentication, auth.toString('base64url'));
   assert.notDeepEqual(auth, names);
@@ -24,7 +24,7 @@ test('password-derived authentication and names match independent PBKDF2/HKDF do
   const independent = await crypto.subtle.importKey('raw', names, 'AES-GCM', false, ['decrypt']);
   assert.equal(await decryptName(independent, 'package-123', envelope), 'Private name');
   const authMaterial = await crypto.subtle.importKey('raw', auth, 'HKDF', false, ['deriveKey']);
-  const authNames = await crypto.subtle.deriveKey({ name: 'HKDF', hash: 'SHA-256', salt, info: new TextEncoder().encode('drive.miszori.dev:admin-names:v1') }, authMaterial, { name: 'AES-GCM', length: 256 }, false, ['decrypt']);
+  const authNames = await crypto.subtle.deriveKey({ name: 'HKDF', hash: 'SHA-256', salt, info: new TextEncoder().encode('vault.miszori.dev:admin-names:v1') }, authMaterial, { name: 'AES-GCM', length: 256 }, false, ['decrypt']);
   await assert.rejects(decryptName(authNames, 'package-123', envelope));
   const directAuth = await crypto.subtle.importKey('raw', auth, 'AES-GCM', false, ['decrypt']);
   await assert.rejects(decryptName(directAuth, 'package-123', envelope));
@@ -37,7 +37,7 @@ test('password-derived authentication and names match independent PBKDF2/HKDF do
 });
 
 test('authentication configuration and password Unicode bounds are strict', async () => {
-  const auth = { initialized: false, username: 'admin-é', labelKey: config, publicOrigin: 'https://drive.example' };
+  const auth = { initialized: false, username: 'admin-é', labelKey: config, publicOrigin: 'https://vault.example' };
   assert.deepEqual(validateAuthConfig(auth), auth);
   for (const bad of [null, {}, { ...auth, initialized: 0 }, { ...auth, username: '' }, { ...auth, username: 'a:b' }, { ...auth, username: 'a\nb' }, { ...auth, labelKey: { ...config, iterations: 599999 } }, { ...auth, labelKey: { ...config, salt: 'AA' } }]) assert.throws(() => validateAuthConfig(bad));
   for (const bad of ['', 'x'.repeat(15), 'x'.repeat(1025), '🔒'.repeat(1025), '\ud800'.repeat(16), null]) await assert.rejects(deriveAdminKeys(bad, config));

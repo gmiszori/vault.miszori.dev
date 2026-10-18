@@ -16,8 +16,8 @@ test('name crypto interoperates with independent Web Crypto PBKDF2, HKDF and AES
   const material = await crypto.subtle.importKey('raw', new TextEncoder().encode(password), 'PBKDF2', false, ['deriveBits']);
   const root = await crypto.subtle.deriveBits({ name: 'PBKDF2', hash: 'SHA-256', iterations: 600000, salt: new Uint8Array(16) }, material, 256);
   const hkdf = await crypto.subtle.importKey('raw', root, 'HKDF', false, ['deriveKey']);
-  const independent = await crypto.subtle.deriveKey({ name: 'HKDF', hash: 'SHA-256', salt: new Uint8Array(16), info: new TextEncoder().encode('drive.miszori.dev:admin-names:v1') }, hkdf, { name: 'AES-GCM', length: 256 }, false, ['decrypt']);
-  const plaintext = await crypto.subtle.decrypt({ name: 'AES-GCM', iv: Buffer.from(envelope.iv, 'base64url'), additionalData: new TextEncoder().encode('drive.miszori.dev:admin-name:v1:package-123'), tagLength: 128 }, independent, Buffer.from(envelope.ciphertext, 'base64url'));
+  const independent = await crypto.subtle.deriveKey({ name: 'HKDF', hash: 'SHA-256', salt: new Uint8Array(16), info: new TextEncoder().encode('vault.miszori.dev:admin-names:v1') }, hkdf, { name: 'AES-GCM', length: 256 }, false, ['decrypt']);
+  const plaintext = await crypto.subtle.decrypt({ name: 'AES-GCM', iv: Buffer.from(envelope.iv, 'base64url'), additionalData: new TextEncoder().encode('vault.miszori.dev:admin-name:v1:package-123'), tagLength: 128 }, independent, Buffer.from(envelope.ciphertext, 'base64url'));
   assert.equal(new TextDecoder().decode(plaintext), name.trim());
   assert.equal(await decryptName(key, 'package-123', envelope), name.trim());
   assert.equal(Buffer.from(envelope.iv, 'base64url').length, 12);

@@ -13,7 +13,7 @@ function client(worker, fetch) {
   const context = vm.createContext({
     window: { isSecureContext: true, addEventListener() {}, removeEventListener() {} },
     navigator: { serviceWorker: { controller: worker, register: async () => ({ active: worker }) } },
-    location: { origin: 'https://drive.example' }, crypto: webcrypto,
+    location: { origin: 'https://vault.example' }, crypto: webcrypto,
     MessageChannel, ReadableStream, Uint8Array, URL, DOMException, setTimeout, clearTimeout, fetch
   });
   vm.runInContext(source + '\nthis.prepare = prepareServiceWorkerDownload;', context);
@@ -23,7 +23,7 @@ function client(worker, fetch) {
 test('a network 404 probe falls back before creating any plaintext stream session', async () => {
   let preparations = 0;
   const worker = {
-    scriptURL: 'https://drive.example/download-worker.js',
+    scriptURL: 'https://vault.example/download-worker.js',
     postMessage(message, [port]) {
       preparations++;
       assert.equal(message.probe, true);
@@ -50,7 +50,7 @@ test('a network 404 probe falls back before creating any plaintext stream sessio
 
 test('terminated worker preparation falls back without dangling promise rejection', async () => {
   const prepare = client({
-    scriptURL: 'https://drive.example/download-worker.js',
+    scriptURL: 'https://vault.example/download-worker.js',
     postMessage() { throw new Error('Worker terminated'); }
   }, () => assert.fail('No probe should run'));
   assert.equal(await prepare(), null);
@@ -59,7 +59,7 @@ test('terminated worker preparation falls back without dangling promise rejectio
 test('cancellation before preparation never probes or silently selects a fallback', async () => {
   const controller = new AbortController();
   controller.abort();
-  const prepare = client({ scriptURL: 'https://drive.example/download-worker.js', postMessage() { assert.fail('Must not prepare a cancelled stream'); } }, () => assert.fail('Must not fetch'));
+  const prepare = client({ scriptURL: 'https://vault.example/download-worker.js', postMessage() { assert.fail('Must not prepare a cancelled stream'); } }, () => assert.fail('Must not fetch'));
   await assert.rejects(prepare({ signal: controller.signal }), { name: 'AbortError' });
 });
 
@@ -181,7 +181,7 @@ test('failed streaming preparation reveals the Blob limit and requires renewed c
   const claimKey = await webcrypto.subtle.importKey('raw', raw, 'HKDF', false, ['deriveBits']);
   const expectedToken = Buffer.from(await webcrypto.subtle.deriveBits({
     name: 'HKDF', hash: 'SHA-256', salt: new TextEncoder().encode(id),
-    info: new TextEncoder().encode('drive.miszori.dev:package-claim:v1')
+    info: new TextEncoder().encode('vault.miszori.dev:package-claim:v1')
   }, claimKey, 256)).toString('base64url');
   const blobs = [];
   const location = { pathname: `/package/${id}`, search: '', hash: `#${encodeKey(raw)}` };

@@ -60,7 +60,7 @@ async function harness(entry, fetcher, options = {}) {
   Object.defineProperties(globalThis, {
     window: { configurable: true, value: win },
     document: { configurable: true, value: { getElementById: $, createElement: () => new Element(), createDocumentFragment: () => Object.assign(new Element(), { isFragment: true }) } },
-    fetch: { configurable: true, value: (path, init) => entry === 'admin' && path === '/admin/api/auth' && options.auth !== false ? json({ initialized: true, username: 'admin-é', labelKey, publicOrigin: 'https://drive.example', ...options.auth }) : fetcher(path, init) },
+    fetch: { configurable: true, value: (path, init) => entry === 'admin' && path === '/admin/api/auth' && options.auth !== false ? json({ initialized: true, username: 'admin-é', labelKey, publicOrigin: 'https://vault.example', ...options.auth }) : fetcher(path, init) },
     location: { configurable: true, value: location },
     history: { configurable: true, value: { replaceState(...args) { replaced.push(args); location.hash = ''; } } },
     navigator: { configurable: true, value: { clipboard: { async writeText(value) { win.clipboard = value; } } } }
@@ -118,7 +118,7 @@ async function independentClaim(raw, id) {
   const key = await webcrypto.subtle.importKey('raw', raw, 'HKDF', false, ['deriveBits']);
   const secret = await webcrypto.subtle.deriveBits({
     name: 'HKDF', hash: 'SHA-256', salt: new TextEncoder().encode(id),
-    info: new TextEncoder().encode('drive.miszori.dev:package-claim:v1')
+    info: new TextEncoder().encode('vault.miszori.dev:package-claim:v1')
   }, key, 256);
   return {
     token: Buffer.from(secret).toString('base64url'),
@@ -162,7 +162,7 @@ test('public opening removes the key and only explicit consent consumes; fallbac
     assert.equal(ui.blobs.length, 1);
     assert.equal(ui.blobs[0].size, archiveSize(files));
     assert.equal(ui.blobs[0].type, 'application/zip');
-    assert.equal(ui.$('save-archive').download, 'drive-pkg-123.zip');
+    assert.equal(ui.$('save-archive').download, 'vault-pkg-123.zip');
     assertZip(Buffer.from(await ui.blobs[0].arrayBuffer()), files, [content, new Uint8Array()]);
     assert.equal(ui.$('package-state').textContent, 'Downloaded');
     assert.ok(ui.$('save-archive').clicked);
@@ -250,7 +250,7 @@ test('save picker runs before consuming, and writable output is streamed without
     assert.equal(ui.$('download-status').textContent, '');
     sequence.push('consume'); return new Response(data.body);
   }, { hash: `#${encodeKey(data.raw)}`, picker(options) {
-    assert.equal(options.suggestedName, 'drive-pkg-123.zip');
+    assert.equal(options.suggestedName, 'vault-pkg-123.zip');
     assert.deepEqual(options.types, [{ description: 'ZIP archive (all package files)', accept: { 'application/zip': ['.zip'] } }]);
     sequence.push('picker');
     return Promise.resolve({ async createWritable() {
@@ -502,7 +502,7 @@ function adminFetcher(onUpload) {
   return async (path, options) => {
     assert.equal(options.headers.Authorization, expectedAuthorization);
     assert.equal(options.credentials, 'omit');
-    if (path.endsWith('/config')) return json({ publicOrigin: 'https://drive.example', labelKey });
+    if (path.endsWith('/config')) return json({ publicOrigin: 'https://vault.example', labelKey });
     if (path === '/admin/api/packages' && !options.method) return json({ packages: [] });
     return onUpload(path, options);
   };
@@ -511,7 +511,7 @@ function adminFetcher(onUpload) {
 test('transfer activity displays server storage and configured quota in GB, refreshes, and clears on logout', async () => {
   let usedBytes = 1500000000;
   const ui = await signedInAdmin(async path => {
-    if (path.endsWith('/config')) return json({ publicOrigin: 'https://drive.example', labelKey });
+    if (path.endsWith('/config')) return json({ publicOrigin: 'https://vault.example', labelKey });
     return json({ packages: [], storage: { usedBytes, maxBytes: 100000000000 } });
   });
   try {
@@ -528,7 +528,7 @@ test('audit shows compact nonwrapping package IDs but preserves full IDs for tit
   const ids = ['abcdef0123456789'.repeat(4), 'exactly12-idz', 'short-id'];
   const deleted = [];
   const ui = await signedInAdmin(async (path, options) => {
-    if (path.endsWith('/config')) return json({ publicOrigin: 'https://drive.miszori.dev', labelKey });
+    if (path.endsWith('/config')) return json({ publicOrigin: 'https://vault.miszori.dev', labelKey });
     if (options.method === 'DELETE') { deleted.push(path); return new Response(null, { status: 204 }); }
     return json({ packages: ids.map(id => ({ id, status: 'ready' })) });
   });
@@ -556,7 +556,7 @@ test('audit allows deletion only for active data while preserving historic name 
   const statuses = ['uploading', 'ready', 'consuming', 'consumed', 'failed', 'expired', 'deleted', 'future-status', undefined];
   const packages = statuses.map((status, index) => ({ id: `status-${index}`, status }));
   const ui = await signedInAdmin(async path => path.endsWith('/config')
-    ? json({ publicOrigin: 'https://drive.example', labelKey }) : json({ packages }));
+    ? json({ publicOrigin: 'https://vault.example', labelKey }) : json({ packages }));
   try {
     for (const [index, status] of statuses.entries()) {
       const buttons = ui.$('audit-body').children[index].children[5].children;
@@ -602,7 +602,7 @@ test('admin validates upload paths, encrypts sequential records, finalizes and f
     const puts = uploads.filter(([, options]) => options.method === 'PUT');
     assert.deepEqual(puts.map(([path]) => path), ['/admin/api/packages/pkg-123/chunks/0', '/admin/api/packages/pkg-123/chunks/1']);
     const link = ui.$('share-link').value;
-    assert.ok(link.startsWith('https://drive.example/package/pkg-123#'));
+    assert.ok(link.startsWith('https://vault.example/package/pkg-123#'));
     const keyText = link.split('#')[1];
     assert.match(keyText, /^[A-Za-z0-9_-]{43}$/);
     const proof = await independentClaim(decodeKey(keyText), 'pkg-123');
@@ -672,11 +672,11 @@ test('HTTP public origins work only between recognized secure-context loopback h
     ['http://localhost:18080', 'localhost', true],
     ['http://127.0.0.1:18080', 'localhost', true],
     ['http://[::1]:18080', '[::1]', true],
-    ['http://localhost:18080', 'drive.example', false],
-    ['http://drive.example', 'localhost', false],
+    ['http://localhost:18080', 'vault.example', false],
+    ['http://vault.example', 'localhost', false],
     ['http://localhost.example', 'localhost', false],
-    ['http://localhost@drive.example', 'localhost', false],
-    ['https://drive.example', 'drive.example', true]
+    ['http://localhost@vault.example', 'localhost', false],
+    ['https://vault.example', 'vault.example', true]
   ]) {
     const ui = await harness('admin', async path => String(path).endsWith('/config') ? json({ publicOrigin, labelKey }) : json({ packages: [] }), { hostname });
     try {
@@ -705,7 +705,7 @@ test('an insecure admin page never sends credentials', async () => {
 test('entrypoints use the exact brand, dark scheme, and task-focused copy', async () => {
   for (const name of ['index', 'admin']) {
     const html = await readFile(new URL(`./${name}.html`, import.meta.url), 'utf8');
-    assert.match(html, /<title>drive\.miszori\.dev<\/title>/);
+    assert.match(html, /<title>vault\.miszori\.dev<\/title>/);
     assert.doesNotMatch(html, /<header|class="brand"/);
     assert.doesNotMatch(html, /<a\b[^>]*\bhref="\/"/);
     assert.match(html, /<meta name="color-scheme" content="dark">/);
@@ -728,11 +728,26 @@ test('entrypoints use the exact brand, dark scheme, and task-focused copy', asyn
   assert.match(adminHTML, /id="result-panel"[^>]*hidden/);
 });
 
+test('deployment and module defaults consistently use the vault namespace', async () => {
+  const compose = await readFile(new URL('../compose.yaml', import.meta.url), 'utf8');
+  const env = await readFile(new URL('../.env.example', import.meta.url), 'utf8');
+  const docker = await readFile(new URL('../Dockerfile', import.meta.url), 'utf8');
+  const go = await readFile(new URL('../go.mod', import.meta.url), 'utf8');
+  const pkg = JSON.parse(await readFile(new URL('../package.json', import.meta.url), 'utf8'));
+  assert.match(compose, /^name: vault-miszori-dev\n/);
+  assert.equal((compose.match(/https:\/\/\$\{DOMAIN:-vault\.miszori\.dev\}/g) || []).length, 2);
+  assert.match(env, /^DOMAIN=vault\.miszori\.dev\n/);
+  assert.match(go, /^module vault\.miszori\.dev\n/);
+  assert.equal(pkg.name, 'vault.miszori.dev');
+  assert.match(docker, /-o \/vault \.\/cmd\/vault/);
+  assert.match(docker, /ENTRYPOINT \["\/vault"\]/);
+});
+
 test('share artwork includes the generic receipt message without adding card description text', async () => {
   const generator = await readFile(new URL('../tools/generate-preview.py', import.meta.url), 'utf8');
   const html = await readFile(new URL('./index.html', import.meta.url), 'utf8');
   assert.ok(generator.includes('"You have received an encrypted package."'));
-  assert.equal((html.match(/share-preview\.png\?v=3/g) || []).length, 2);
+  assert.equal((html.match(/share-preview\.png\?v=4/g) || []).length, 2);
   assert.match(html, /property="og:description" content=""/);
   assert.match(html, /name="twitter:description" content=""/);
 });
@@ -816,7 +831,7 @@ test('VPN admin uses a local IP certificate and redirects to the IP without chan
   assert.match(config, /redir https:\/\/\{\$VPN_BIND_IP:10\.0\.0\.1\}\{uri\} 308/);
   assert.doesNotMatch(config, /https:\/\/\{\$DOMAIN\}:8443/);
   assert.match(compose, /VPN_BIND_IP: \$\{VPN_BIND_IP:-10\.0\.0\.1\}/);
-  assert.match(compose, /PUBLIC_ORIGIN: https:\/\/\$\{DOMAIN:-drive\.miszori\.dev\}/);
+  assert.match(compose, /PUBLIC_ORIGIN: https:\/\/\$\{DOMAIN:-vault\.miszori\.dev\}/);
 });
 
 test('HTML entrypoints reference only the agreed self-hosted assets and contain no inline scripts or styles', async () => {
@@ -870,7 +885,7 @@ test('automatic name decryption tolerates unavailable old labels and supports re
   const patches = [];
   const ui = await signedInAdmin(async (path, options) => {
     assert.ok(!JSON.stringify([path, options]).includes(namePhrase));
-    if (path.endsWith('/config')) return json({ publicOrigin: 'https://drive.example', labelKey });
+    if (path.endsWith('/config')) return json({ publicOrigin: 'https://vault.example', labelKey });
     if (options.method === 'PATCH') { patches.push(JSON.parse(options.body)); return new Response(null, { status: 204 }); }
     return json({ packages });
   });
@@ -897,7 +912,7 @@ test('signout and pagehide erase plaintext and reject late audit work', async ()
   let defer = false;
   let release;
   const ui = await signedInAdmin(async path => {
-    if (path.endsWith('/config')) return json({ publicOrigin: 'https://drive.example', labelKey });
+    if (path.endsWith('/config')) return json({ publicOrigin: 'https://vault.example', labelKey });
     if (defer) return new Promise(resolve => { release = () => resolve(json({ packages })); });
     return json({ packages });
   });
@@ -947,7 +962,7 @@ test('failed encrypted name PATCH aborts and deletes before any file upload', as
 
 test('passive recipient profile uses safe text nodes and old records show a dash', async () => {
   const hostile = '<img src=x onerror=alert(1)>';
-  const ui = await signedInAdmin(async path => path.endsWith('/config') ? json({ publicOrigin: 'https://drive.example', labelKey }) : json({ packages: [
+  const ui = await signedInAdmin(async path => path.endsWith('/config') ? json({ publicOrigin: 'https://vault.example', labelKey }) : json({ packages: [
     { id: 'pkg', openedAt: '2026-01-01T00:00:00Z', openedIp: '192.0.2.1', openedBrowser: { browser: hostile, os: 'Windows', deviceType: 'desktop', userAgent: hostile } }, { id: 'old' }
   ] }));
   try {
@@ -968,7 +983,7 @@ test('passive recipient profile uses safe text nodes and old records show a dash
 test('late decryption cannot reinsert plaintext after signout, and detached labels are scrubbed', async () => {
   const { nameKey: key } = fixtureKeys;
   const packages = [{ id: 'pkg-123', encryptedName: await encryptName(key, 'pkg-123', 'Sensitive label') }];
-  const ui = await signedInAdmin(async path => path.endsWith('/config') ? json({ publicOrigin: 'https://drive.example', labelKey }) : json({ packages }));
+  const ui = await signedInAdmin(async path => path.endsWith('/config') ? json({ publicOrigin: 'https://vault.example', labelKey }) : json({ packages }));
   const originalDecrypt = crypto.subtle.decrypt;
   let release;
   try {
@@ -997,7 +1012,7 @@ test('first login sets a password once and automatically enables private names w
     assert.ok(!JSON.stringify([path, options]).includes(adminPassword));
     if (path.endsWith('/auth')) {
       assert.equal(options.headers, undefined);
-      return json({ initialized: false, username: 'admin-é', labelKey, publicOrigin: 'https://drive.example' });
+      return json({ initialized: false, username: 'admin-é', labelKey, publicOrigin: 'https://vault.example' });
     }
     if (path.endsWith('/setup')) {
       assert.deepEqual(JSON.parse(options.body), { setupToken: token, authentication: fixtureKeys.authentication });
@@ -1005,7 +1020,7 @@ test('first login sets a password once and automatically enables private names w
       return new Response(null, { status: 204 });
     }
     assert.equal(options.headers.Authorization, expectedAuthorization);
-    if (path.endsWith('/config')) return json({ publicOrigin: 'https://drive.example', labelKey });
+    if (path.endsWith('/config')) return json({ publicOrigin: 'https://vault.example', labelKey });
     return json({ packages: [] });
   }, { auth: false });
   try {
@@ -1078,7 +1093,7 @@ test('wrong passwords and later 401 responses cannot unlock names or retain a se
     assert.ok(!JSON.stringify([path, options]).includes(adminPassword));
     assert.ok(!JSON.stringify([path, options]).includes('wrong-but-long-password'));
     if (expired || options.headers.Authorization !== expectedAuthorization) return new Response(null, { status: 401 });
-    if (path.endsWith('/config')) return json({ publicOrigin: 'https://drive.example', labelKey });
+    if (path.endsWith('/config')) return json({ publicOrigin: 'https://vault.example', labelKey });
     return json({ packages });
   });
   try {
@@ -1155,7 +1170,7 @@ test('pagehide during password derivation discards late keys and never authentic
 test('pagehide during label encryption prevents late PATCH and plaintext rendering', async () => {
   let patches = 0;
   const ui = await signedInAdmin(async (path, options) => {
-    if (path.endsWith('/config')) return json({ publicOrigin: 'https://drive.example', labelKey });
+    if (path.endsWith('/config')) return json({ publicOrigin: 'https://vault.example', labelKey });
     if (options.method === 'PATCH') { ++patches; return new Response(null, { status: 204 }); }
     return json({ packages: [{ id: 'pkg-123' }] });
   });
@@ -1196,7 +1211,7 @@ test('late rename completion cannot close a newer dialog and refreshed detached 
   const encryptedName = await encryptName(fixtureKeys.nameKey, 'pkg-123', 'Original name');
   let release;
   const ui = await signedInAdmin(async (path, options) => {
-    if (path.endsWith('/config')) return json({ publicOrigin: 'https://drive.example', labelKey });
+    if (path.endsWith('/config')) return json({ publicOrigin: 'https://vault.example', labelKey });
     if (options.method === 'PATCH') return new Promise(resolve => { release = () => resolve(new Response(null, { status: 204 })); });
     return json({ packages: [{ id: 'pkg-123', encryptedName }] });
   });

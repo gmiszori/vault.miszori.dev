@@ -25,7 +25,7 @@ func finalizeBody(chunks int) []byte {
 
 func testServer(t *testing.T) *Server {
 	t.Helper()
-	s, e := newServer(t.TempDir(), "admin", testSetupToken, "https://drive.example", 100*1024*1024)
+	s, e := newServer(t.TempDir(), "admin", testSetupToken, "https://vault.example", 100*1024*1024)
 	if e != nil {
 		t.Fatal(e)
 	}

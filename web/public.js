@@ -78,7 +78,7 @@ async function download() {
   updateButton();
   status('Choose a destination. The transfer has not started yet.');
   const id = route[1];
-  const filename = `drive-${id.slice(0, 12)}.zip`;
+  const filename = `vault-${id.slice(0, 12)}.zip`;
   let consumed = false;
   let sink;
   let frames;

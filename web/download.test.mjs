@@ -7,7 +7,7 @@ import { webcrypto } from 'node:crypto';
 
 const workerSource = await readFile(new URL('./download-worker.js', import.meta.url), 'utf8');
 const clientSource = await readFile(new URL('./download.js', import.meta.url), 'utf8');
-const origin = 'https://drive.example';
+const origin = 'https://vault.example';
 const token = 'a'.repeat(64);
 const nonce = 'b'.repeat(64);
 

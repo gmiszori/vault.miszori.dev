@@ -23,7 +23,7 @@ jobs:
           check-latest: true
           cache: false
       - name: Backend tests and race detector
-        run: go test -race ./cmd/drive && go vet ./cmd/drive
+        run: go test -race ./cmd/vault && go vet ./cmd/vault
       - name: Known Go vulnerability scan
         run: |
           go install golang.org/x/vuln/cmd/govulncheck@v1.9.0
@@ -31,18 +31,18 @@ jobs:
       - name: Browser protocol and archive tests
         run: node --test web/*.test.mjs
       - name: Validate production proxy
-        run: docker run --rm -e DOMAIN=drive.miszori.dev -e ACME_EMAIL=test@example.com -v "$PWD/Caddyfile:/etc/caddy/Caddyfile:ro" caddy:2.11-alpine@sha256:d8542f48d34a9cf4e4c11a478865229840e87e4c96ea3f439101f31a5d35f75f caddy validate --config /etc/caddy/Caddyfile --adapter caddyfile
+        run: docker run --rm -e DOMAIN=vault.miszori.dev -e ACME_EMAIL=test@example.com -v "$PWD/Caddyfile:/etc/caddy/Caddyfile:ro" caddy:2.11-alpine@sha256:d8542f48d34a9cf4e4c11a478865229840e87e4c96ea3f439101f31a5d35f75f caddy validate --config /etc/caddy/Caddyfile --adapter caddyfile
       - name: Start integration stack
-        run: docker compose -p drive-test -f tests/compose.yaml up --build -d --wait
+        run: docker compose -p vault-test -f tests/compose.yaml up --build -d --wait
       - name: Scan the exact production Go binary
         run: |
-          container_id=$(docker compose -p drive-test -f tests/compose.yaml ps -q api)
-          docker cp "$container_id:/drive" "$RUNNER_TEMP/drive-security-scan"
-          govulncheck -mode=binary "$RUNNER_TEMP/drive-security-scan"
+          container_id=$(docker compose -p vault-test -f tests/compose.yaml ps -q api)
+          docker cp "$container_id:/vault" "$RUNNER_TEMP/vault-security-scan"
+          govulncheck -mode=binary "$RUNNER_TEMP/vault-security-scan"
       - name: Exercise Caddy and API
         run: node --test tests/*.test.mjs
       - name: Cleanup test stack
         if: always()
         run: |
-          docker compose -p drive-test -f tests/compose.yaml down -v
-          rm -f "$RUNNER_TEMP/drive-security-scan"
+          docker compose -p vault-test -f tests/compose.yaml down -v
+          rm -f "$RUNNER_TEMP/vault-security-scan"

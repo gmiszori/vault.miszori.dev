@@ -39,7 +39,7 @@ test('claim proof matches independent HKDF-SHA256 and hashes decoded secret byte
   const derive = async (salt, info) => Buffer.from(await webcrypto.subtle.deriveBits({
     name: 'HKDF', hash: 'SHA-256', salt: new TextEncoder().encode(salt), info: new TextEncoder().encode(info)
   }, key, 256));
-  const expected = await derive(id, 'drive.miszori.dev:package-claim:v1');
+  const expected = await derive(id, 'vault.miszori.dev:package-claim:v1');
   const token = await deriveClaimToken(raw, id);
   assert.equal(token, expected.toString('base64url'));
   assert.deepEqual(Buffer.from(decodeKey(token)), expected);
@@ -50,8 +50,8 @@ test('claim proof matches independent HKDF-SHA256 and hashes decoded secret byte
   assert.notEqual(token, encodeKey(raw));
   assert.notEqual(token, await deriveClaimToken(raw, 'other-package'));
   assert.notEqual(token, await deriveClaimToken(new Uint8Array(32).fill(9), id));
-  assert.notEqual(token, (await derive(id, 'drive.miszori.dev:admin-auth:v1')).toString('base64url'));
-  assert.notEqual(token, (await derive(id, 'drive.miszori.dev:package-claim:v2')).toString('base64url'));
+  assert.notEqual(token, (await derive(id, 'vault.miszori.dev:admin-auth:v1')).toString('base64url'));
+  assert.notEqual(token, (await derive(id, 'vault.miszori.dev:package-claim:v2')).toString('base64url'));
   assert.match(await deriveClaimToken(raw, 'abcdef0123456789'.repeat(4)), /^[A-Za-z0-9_-]{43}$/);
   assert.deepEqual(raw, original, 'derivation must not destroy the still-needed file key');
 });

@@ -1,3 +1,3 @@
-module drive.miszori.dev
+module vault.miszori.dev
 
 go 1.26

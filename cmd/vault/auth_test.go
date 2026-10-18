@@ -26,7 +26,7 @@ func setupBody(token, authentication string) []byte {
 
 func freshServer(t *testing.T) *Server {
 	t.Helper()
-	s, err := newServer(t.TempDir(), "", testSetupToken, "https://drive.example", 100*1024*1024)
+	s, err := newServer(t.TempDir(), "", testSetupToken, "https://vault.example", 100*1024*1024)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -172,7 +172,7 @@ func TestConcurrentSetup(t *testing.T) {
 
 func TestAuthRestartAndFreshTokenRequirement(t *testing.T) {
 	for _, token := range []string{"", strings.Repeat("x", 31)} {
-		if _, err := newServer(t.TempDir(), "admin", token, "https://drive.example", 1000); err == nil {
+		if _, err := newServer(t.TempDir(), "admin", token, "https://vault.example", 1000); err == nil {
 			t.Fatal("fresh startup without strong setup token")
 		}
 	}
@@ -290,8 +290,8 @@ func TestEnrollmentCSRFAndRateLimits(t *testing.T) {
 	}
 	now := time.Now().Add(61 * time.Second)
 	s.now = func() time.Time { return now }
-	r := httptest.NewRequest("POST", "https://drive.example/api/admin/setup", bytes.NewReader(setupBody(testSetupToken, testAuthentication)))
-	r.Header.Set("Origin", "https://drive.example")
+	r := httptest.NewRequest("POST", "https://vault.example/api/admin/setup", bytes.NewReader(setupBody(testSetupToken, testAuthentication)))
+	r.Header.Set("Origin", "https://vault.example")
 	r.Header.Set("Sec-Fetch-Site", "same-origin")
 	w := httptest.NewRecorder()
 	s.ServeHTTP(w, r)

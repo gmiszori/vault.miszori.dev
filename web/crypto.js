@@ -22,7 +22,7 @@ export async function deriveClaimToken(rawKey, id) {
   const key = await crypto.subtle.importKey('raw', rawKey, 'HKDF', false, ['deriveBits']);
   const secret = new Uint8Array(await crypto.subtle.deriveBits({
     name: 'HKDF', hash: 'SHA-256', salt: encoder.encode(id),
-    info: encoder.encode('drive.miszori.dev:package-claim:v1')
+    info: encoder.encode('vault.miszori.dev:package-claim:v1')
   }, key, 256));
   try { return encodeKey(secret); } finally { secret.fill(0); }
 }

@@ -42,19 +42,19 @@ function plainRequest(port, path, host) {
 test('production VPN IP serves admin while public listeners abort IP and unknown-host requests', { timeout: 90000 }, async () => {
   const compose = await readFile(join(root, 'compose.yaml'), 'utf8');
   const image = /image: (caddy:[^\s]+)/.exec(compose)[1];
-  const dir = await mkdtemp(join(tmpdir(), 'drive-vpn-tls-'));
-  const name = `drive-vpn-tls-${process.pid}`;
+  const dir = await mkdtemp(join(tmpdir(), 'vault-vpn-tls-'));
+  const name = `vault-vpn-tls-${process.pid}`;
   let started = false;
   try {
     const adapted = JSON.parse(docker('run', '--rm',
-      '-e', 'DOMAIN=drive.example', '-e', 'VPN_BIND_IP=10.0.0.1',
-      '-e', 'ACME_EMAIL=test@example.com', '-e', 'PUBLIC_ORIGIN=https://drive.example',
+      '-e', 'DOMAIN=vault.example', '-e', 'VPN_BIND_IP=10.0.0.1',
+      '-e', 'ACME_EMAIL=test@example.com', '-e', 'PUBLIC_ORIGIN=https://vault.example',
       '-v', `${join(root, 'Caddyfile')}:/etc/caddy/Caddyfile:ro`,
       image, 'caddy', 'adapt', '--config', '/etc/caddy/Caddyfile', '--adapter', 'caddyfile'));
     const policies = adapted.apps.tls.automation.policies;
     const vpnPolicy = policies.find(policy => policy.subjects?.includes('10.0.0.1'));
     assert.equal(vpnPolicy.issuers[0].module, 'internal');
-    assert.ok(!policies.find(policy => policy.subjects?.includes('drive.example'))?.issuers?.some(issuer => issuer.module === 'internal'));
+    assert.ok(!policies.find(policy => policy.subjects?.includes('vault.example'))?.issuers?.some(issuer => issuer.module === 'internal'));
     // Only the public certificate issuer is substituted for this isolated smoke test.
     // The private-IP policy and production routes remain unchanged; no real ACME requests run.
     for (const policy of policies) policy.issuers = [{ module: 'internal' }];
@@ -87,24 +87,24 @@ test('production VPN IP serves admin while public listeners abort IP and unknown
     assert.match(admin.body, /id="login-form"/);
     assert.equal((await request(vpnPort, '/admin.js', '10.0.0.1', ca, false)).status, 200);
     for (const path of ['/admin', '/admin/api/packages', '/api/admin/packages', '/admin.js']) {
-      assert.equal((await request(publicPort, path, 'drive.example', ca)).status, 404);
+      assert.equal((await request(publicPort, path, 'vault.example', ca)).status, 404);
     }
     const redirect = await fetch(`http://127.0.0.1:${httpPort}/admin?test=1`, { redirect: 'manual' });
     assert.equal(redirect.status, 308);
     assert.equal(redirect.headers.get('location'), 'https://10.0.0.1/admin?test=1');
-    const home = await request(publicPort, '/', 'drive.example', ca);
+    const home = await request(publicPort, '/', 'vault.example', ca);
     assert.equal(home.headers.location, 'https://gergo.miszori.dev');
-    const packagePage = await request(publicPort, '/package/example', 'drive.example', ca);
+    const packagePage = await request(publicPort, '/package/example', 'vault.example', ca);
     assert.equal(packagePage.status, 200);
     assert.match(packagePage.body, /Checking package availability/);
-    assert.equal((await request(publicPort, '/public.js', 'drive.example', ca)).status, 200);
-    const publicRedirect = await plainRequest(publicPlainPort, '/package/example', 'drive.example');
+    assert.equal((await request(publicPort, '/public.js', 'vault.example', ca)).status, 200);
+    const publicRedirect = await plainRequest(publicPlainPort, '/package/example', 'vault.example');
     assert.equal(publicRedirect.statusCode, 308);
-    assert.equal(publicRedirect.headers.location, 'https://drive.example/package/example');
+    assert.equal(publicRedirect.headers.location, 'https://vault.example/package/example');
     for (const host of ['192.0.2.10', '10.0.0.1', 'unknown.example']) {
       for (const path of ['/', '/admin', '/package/example']) {
         await assert.rejects(plainRequest(publicPlainPort, path, host), { code: 'ECONNRESET' });
-        await assert.rejects(request(publicPort, path, 'drive.example', ca, true, host), { code: 'ECONNRESET' });
+        await assert.rejects(request(publicPort, path, 'vault.example', ca, true, host), { code: 'ECONNRESET' });
       }
     }
     await assert.rejects(request(publicPort, '/admin', '10.0.0.1', ca, false), { code: 'ECONNRESET' });

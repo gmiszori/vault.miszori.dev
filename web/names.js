@@ -27,7 +27,7 @@ export function validateName(value) {
 
 function aad(id) {
   if (typeof id !== 'string' || !/^[A-Za-z0-9_-]{1,128}$/.test(id)) throw new Error('Invalid package identifier.');
-  return encoder.encode(`drive.miszori.dev:admin-name:v1:${id}`);
+  return encoder.encode(`vault.miszori.dev:admin-name:v1:${id}`);
 }
 
 export async function encryptName(key, id, value) {

@@ -15,8 +15,8 @@ export async function deriveTestKeys(password, labelKey) {
   try {
     const hkdf = await webcrypto.subtle.importKey('raw', root, 'HKDF', false, ['deriveBits', 'deriveKey']);
     const parameters = info => ({ name: 'HKDF', hash: 'SHA-256', salt, info: encoder.encode(info) });
-    const authentication = Buffer.from(await webcrypto.subtle.deriveBits(parameters('drive.miszori.dev:admin-auth:v1'), hkdf, 256)).toString('base64url');
-    const nameKey = await webcrypto.subtle.deriveKey(parameters('drive.miszori.dev:admin-names:v1'), hkdf, { name: 'AES-GCM', length: 256 }, false, ['encrypt', 'decrypt']);
+    const authentication = Buffer.from(await webcrypto.subtle.deriveBits(parameters('vault.miszori.dev:admin-auth:v1'), hkdf, 256)).toString('base64url');
+    const nameKey = await webcrypto.subtle.deriveKey(parameters('vault.miszori.dev:admin-names:v1'), hkdf, { name: 'AES-GCM', length: 256 }, false, ['encrypt', 'decrypt']);
     return { authentication, nameKey };
   } finally { root.fill(0); }
 }

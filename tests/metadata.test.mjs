@@ -25,7 +25,7 @@ async function encryptedName(id, text) {
   assert.equal(config.labelKey.version, 1); assert.equal(config.labelKey.iterations, 600000);
   assert.equal(Buffer.from(config.labelKey.salt, 'base64url').length, 16);
   const key = nameKey;
-  const iv = randomBytes(12); const params = { name: 'AES-GCM', iv, additionalData: new TextEncoder().encode(`drive.miszori.dev:admin-name:v1:${id}`) };
+  const iv = randomBytes(12); const params = { name: 'AES-GCM', iv, additionalData: new TextEncoder().encode(`vault.miszori.dev:admin-name:v1:${id}`) };
   const ciphertext = await webcrypto.subtle.encrypt(params, key, new TextEncoder().encode(text));
   return { envelope: { version: 1, iv: encode(iv), ciphertext: encode(ciphertext) }, key, params };
 }
@@ -114,9 +114,9 @@ test('messaging previews are generic, server-rendered, and never claim or audit 
     for (const origin of [pub, admin]) {
       const response = await fetch(`${origin}/package/${p.id}?private=do-not-reflect-this`, { headers });
       assert.equal(response.status, 200); const html = await response.text();
-      assert.match(html, /property="og:title" content="drive\.miszori\.dev"/);
+      assert.match(html, /property="og:title" content="vault\.miszori\.dev"/);
       assert.match(html, /name="twitter:card" content="summary_large_image"/);
-      assert.ok(html.includes(`content='${pub}/share-preview.png?v=3'`));
+      assert.ok(html.includes(`content='${pub}/share-preview.png?v=4'`));
       assert.match(html, /property="og:description" content=""/);
       assert.match(html, /name="twitter:description" content=""/);
       assert.equal(html.includes('Server logs include'), false);
