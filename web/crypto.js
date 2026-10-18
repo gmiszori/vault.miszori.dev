@@ -3,6 +3,7 @@ export const MAX_CIPHERTEXT = CHUNK_SIZE + 16;
 export const MAX_BYTES = 20 * 1024 ** 3;
 export const MAX_FILES = 20000;
 export const MEMORY_LIMIT = 128 * 1024 ** 2;
+export const MAX_TEXT_BYTES = CHUNK_SIZE;
 const encoder = new TextEncoder();
 
 export function encodeKey(bytes) {
@@ -119,6 +120,23 @@ export function parseManifest(bytes) {
     throw new Error('The encrypted manifest is not valid UTF-8 JSON.');
   }
   return validateManifest(manifest);
+}
+
+export function serializeText(value) {
+  if (typeof value !== 'string' || /\p{Cs}/u.test(value)) throw new Error('Text contains invalid Unicode.');
+  const text = encoder.encode(value);
+  if (!text.byteLength || text.byteLength > MAX_TEXT_BYTES) throw new Error('Enter text up to 8 MiB in UTF-8.');
+  const manifest = { version: 1, format: 'text', size: text.byteLength, chunkSize: CHUNK_SIZE };
+  return { plaintext: encoder.encode(JSON.stringify(manifest)), text, bytes: text.byteLength, chunks: 2 };
+}
+
+export function parseTextManifest(bytes) {
+  if (bytes.byteLength > 1024) throw new Error('Invalid text manifest.');
+  let manifest;
+  try { manifest = JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(bytes)); }
+  catch { throw new Error('Invalid text manifest.'); }
+  if (!manifest || manifest.version !== 1 || manifest.format !== 'text' || manifest.chunkSize !== CHUNK_SIZE || !Number.isSafeInteger(manifest.size) || manifest.size < 1 || manifest.size > MAX_TEXT_BYTES) throw new Error('Invalid text manifest.');
+  return manifest;
 }
 
 export class FramedReader {

@@ -22,7 +22,7 @@
 * { box-sizing: border-box; }
 [hidden] { display: none !important; }
 body { margin: 0; font-size: 15px; line-height: 1.6; }
-button, input, select { font: inherit; }
+button, input, select, textarea { font: inherit; }
 button, a, input, select, .file-picker { touch-action: manipulation; }
 a { color: var(--focus); }
 button { color: inherit; cursor: pointer; }
@@ -99,6 +99,10 @@ progress.is-complete { accent-color: var(--success); }
 progress.is-complete::-webkit-progress-value { background: var(--success); }
 progress.is-complete::-moz-progress-bar { background: var(--success); }
 #save-archive { margin-top: 16px; }
+textarea { display: block; width: 100%; min-width: 0; max-width: 100%; min-height: 160px; max-height: 60vh; resize: vertical; padding: 12px; border: 1px solid var(--line); border-radius: 6px; color: var(--text); background: var(--input); line-height: 1.5; white-space: pre-wrap; overflow-wrap: anywhere; }
+.format-picker { max-width: 320px; margin-bottom: 14px; }
+#text-result { margin-top: 18px; }
+#copy-text { margin-top: 12px; }
 .composer { padding: 20px; }
 .composer h1 { margin-bottom: 12px; font-size: 23px; }
 .drop-zone { display: flex; align-items: center; flex-wrap: wrap; gap: 10px 16px; padding: 14px; border: 1px dashed var(--line); border-radius: 6px; }

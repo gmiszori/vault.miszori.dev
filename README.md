@@ -1,6 +1,6 @@
 # vault.miszori.dev
 
-Private, client-encrypted file packages with one-time or expiry-based access. Both pages use a minimal black interface with blue controls, green Ready states, and red Unavailable/destructive-download warnings. The layout is capped at 1,100px with no branding header; public package cards are centered in the viewport, with scrolling for taller content. Package links initially show only “Checking package availability”, then reveal the ready or unavailable view after validation. Docker runs a small Go API and Caddy; the browser encrypts/decrypts with WebCrypto. No JavaScript frameworks, third-party scripts, analytics, database service, or build step for the web pages.
+Private, client-encrypted file and plain-text packages with one-time or expiry-based access. Both pages use a minimal black interface with blue controls, green Ready states, and red Unavailable/destructive-download warnings. The layout is capped at 1,100px with no branding header; public package cards are centered in the viewport, with scrolling for taller content. Package links initially show only “Checking package availability”, then reveal the ready or unavailable view after validation. Docker runs a small Go API and Caddy; the browser encrypts/decrypts with WebCrypto. No JavaScript frameworks, third-party scripts, analytics, database service, or build step for the web pages.
 
 ## What it does
 
@@ -78,6 +78,16 @@ Choose **Availability → Available until expiry** in the upload panel to keep e
 **Activity (count)** opens a private, paginated history of every proof-authorized retrieval start: timestamp, source IP, and reported browser/OS/device (including interrupted attempts). Availability checks and invalid proofs do not create audit records. Pages hold at most 100 entries in memory; use **Next page** for older/later entries. Closing the dialog or signing out clears the displayed audit details. This history records a transfer start, not proof of a successful save or human viewing. Browser profiles are unverified request claims.
 
 Retrieval logs are persisted separately from ciphertext and retained with package audit metadata until 90 days after expiry, including after deletion. They are not included in the ciphertext storage meter/quota. Reusable links may generate large logs: monitor disk space and disclose this metadata collection to recipients. No arbitrary retrieval-count cap silently drops records. Disk audit-write failures fail closed before ciphertext is served. Deleting a reusable package or reaching its expiry prevents new retrievals immediately; already admitted streams may finish, with ciphertext cleanup deferred until the last active stream closes. Their bytes remain quota-counted during that interval. Restart cleanup removes revoked packages and preserves ready reusable packages.
+
+## Encrypted plain text
+
+Choose **Format → Plain TXT** in the admin panel, enter multiline text, select availability/expiry, then **Encrypt and create link**. The limit is **8 MiB of UTF-8 bytes**, not characters; Unicode and line breaks are supported. Text never goes to the API in plaintext. The editor is cleared after encryption/upload and on sign-out/leaving; switching back to files also clears it. These features do not require resetting existing vault volumes or enrollment: older packages default to files/one-time.
+
+Recipients see **Format: Plain TXT** and explicitly press **View text**. Merely opening or previewing a link does not retrieve, audit, or consume its text. One-time text requires consent, displays a one-time-view warning, and is destroyed when viewing starts—even if decryption/network delivery later fails. Copy it before leaving. Expiry-based text has no destructive warning, can be viewed again until expiry/deletion, and logs every authorized view start in the same admin activity history.
+
+After authenticated decryption, text is displayed literally in a read-only, multiline box; HTML/script-looking content is never executed. **Copy text** uses the clipboard when permitted, or selects the text for manual copying. No ZIP, file download, save picker, Blob URL, or Service Worker download is created. Decrypted text is cleared when the page is left or another package is initialized. Copies already placed on the system clipboard or retained by recipients cannot be revoked/erased by this application.
+
+Text packages contain two AES-GCM encrypted records with the same package/index-bound AAD as files: a small version-1 manifest `{format:"text",size:<UTF-8 bytes>,chunkSize:8388608}` (also containing `version:1`), then the UTF-8 text bytes. The browser strictly verifies manifest bounds, record count, byte size, UTF-8 validity and end-of-stream before displaying anything. The server enforces encrypted record/count limits without interpreting contents. Only `format` (`files` or `text`) and `oneTime` are added to public availability metadata; the server learns the package type, but not the text, filenames or keys.
 
 ## Using it
 
@@ -190,6 +200,7 @@ Limits must be positive and internally consistent: upload/download limits cannot
 │   ├── auth.go           One-time enrollment and verifier-only login state
 │   ├── claims.go         Canonical claim-verifier/proof validation
 │   ├── retrievals.go     Durable paginated retrieval-start audit
+│   ├── formats.go        Encrypted text record/count/size constraints
 │   ├── admission.go      Global budgets, concurrency and connection caps
 │   ├── health.go         Shell-free runtime health-check command
 │   ├── main_test.go      Backend lifecycle, races, auth, failure/expiry tests

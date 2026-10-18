@@ -249,7 +249,7 @@ func TestPrivateMetadataProtocolAndRetention(t *testing.T) {
 			patchLabel(t, s, id, nameEnvelope(17))
 			w := request(s, "GET", "/api/packages/"+id, nil, false, "")
 			var public map[string]any
-			if err := json.Unmarshal(w.Body.Bytes(), &public); err != nil || w.Code != 200 || len(public) != 3 || public["status"] != "ready" || public["expiresAt"] == nil || public["oneTime"] != true {
+			if err := json.Unmarshal(w.Body.Bytes(), &public); err != nil || w.Code != 200 || len(public) != 4 || public["status"] != "ready" || public["expiresAt"] == nil || public["oneTime"] != true || public["format"] != "files" {
 				t.Fatal("public response changed", w.Body, err)
 			}
 			switch action {

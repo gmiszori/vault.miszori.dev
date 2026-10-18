@@ -7,6 +7,7 @@ import { join } from 'node:path';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { ZipWriter, archiveSize } from '../web/zip.js';
+import { serializeText, parseTextManifest, MAX_TEXT_BYTES } from '../web/crypto.js';
 import { adminSession } from './auth-helper.mjs';
 import { protectPackage } from './claim-helper.mjs';
 
@@ -280,5 +281,44 @@ test('reusable ciphertext survives repeated downloads and records every proof-au
     assert.equal((await fetch(`${pub}/admin/api/packages/${p.id}/retrievals`, { headers: auth })).status, 404);
   } finally {
     await adminFetch(`packages/${p.id}`, 'DELETE');
+  }
+});
+
+test('encrypted text up to 8 MiB round-trips in both access modes without plaintext on the server API', async () => {
+  for (const oneTime of [true, false]) {
+    const prefix = 'Private multiline text\n東京 🔐\n<script>literal</script>\n';
+    const value = oneTime ? prefix : prefix + 'x'.repeat(MAX_TEXT_BYTES - new TextEncoder().encode(prefix).length);
+    const encoded = serializeText(value);
+    const created = await adminFetch('packages', 'POST', JSON.stringify({ ttlSeconds: 3600, format: 'text', oneTime }));
+    assert.equal(created.status, 201);
+    const p = await protectPackage(await created.json());
+    assert.equal(p.format, 'text');
+    try {
+      const key = await webcrypto.subtle.importKey('raw', p.rawKey, 'AES-GCM', false, ['encrypt', 'decrypt']);
+      for (const [n, bytes] of [encoded.plaintext, encoded.text].entries()) {
+        await upload(p, n, new Uint8Array(await webcrypto.subtle.encrypt(parameters(p.id, n), key, bytes)));
+      }
+      await finalize(p, 2);
+      const before = await (await adminFetch('packages')).json();
+      assert.equal(before.packages.find(item => item.id === p.id).retrievalCount, 0);
+      const meta = await (await fetch(`${pub}/api/packages/${p.id}`)).json();
+      assert.equal(meta.format, 'text');
+      assert.equal(meta.oneTime, oneTime);
+      assert.ok(!JSON.stringify(meta).includes(prefix));
+      for (let attempt = 0; attempt < (oneTime ? 1 : 2); attempt++) {
+        const response = await fetch(`${pub}/api/packages/${p.id}/consume`, { method: 'POST', headers: p.claimHeaders });
+        const decrypted = [];
+        let index = 0;
+        for await (const record of records(response)) decrypted.push(new Uint8Array(await webcrypto.subtle.decrypt(parameters(p.id, index++), key, record)));
+        assert.equal(decrypted.length, 2);
+        assert.equal(parseTextManifest(decrypted[0]).size, encoded.bytes);
+        assert.equal(new TextDecoder('utf-8', { fatal: true }).decode(decrypted[1]), value);
+      }
+      if (oneTime) assert.equal((await fetch(`${pub}/api/packages/${p.id}/consume`, { method: 'POST', headers: p.claimHeaders })).status, 404);
+      else assert.equal((await fetch(`${pub}/api/packages/${p.id}`)).status, 200);
+      const activity = await (await adminFetch(`packages/${p.id}/retrievals`)).json();
+      assert.equal(activity.retrievals.length, oneTime ? 1 : 2);
+      assert.ok(!JSON.stringify(activity).includes(prefix));
+    } finally { await adminFetch(`packages/${p.id}`, 'DELETE'); }
   }
 });

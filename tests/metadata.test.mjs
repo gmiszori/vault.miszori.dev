@@ -54,7 +54,7 @@ test('admin labels stay encrypted, private, and independent of the package paylo
     const plain = await webcrypto.subtle.decrypt(params, key, Buffer.from(listed.encryptedName.ciphertext, 'base64url'));
     assert.equal(new TextDecoder().decode(plain), label);
     const publicInfo = await (await fetch(`${pub}/api/packages/${p.id}`)).json();
-    assert.deepEqual(Object.keys(publicInfo).sort(), ['expiresAt', 'oneTime', 'status']);
+    assert.deepEqual(Object.keys(publicInfo).sort(), ['expiresAt', 'format', 'oneTime', 'status']);
     assert.equal((await fetch(`${pub}/names.js`)).status, 404);
     assert.equal((await fetch(`${admin}/names.js`)).status, 200);
     const claim = await fetch(`${pub}/api/packages/${p.id}/consume`, { method: 'POST', headers: p.claimHeaders });

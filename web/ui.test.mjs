@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import { webcrypto } from 'node:crypto';
-import { CHUNK_SIZE, MEMORY_LIMIT, encodeKey, decodeKey, importKey, encryptChunk, decryptChunk, parseManifest, serializeManifest } from './crypto.js';
+import { CHUNK_SIZE, MEMORY_LIMIT, encodeKey, decodeKey, importKey, encryptChunk, decryptChunk, parseManifest, serializeManifest, serializeText, parseTextManifest, MAX_TEXT_BYTES } from './crypto.js';
 import { archiveSize } from './zip.js';
 import { encryptName, decryptName } from './names.js';
 import { deriveAdminKeys, adminAuthorization } from './auth.js';
@@ -577,7 +577,7 @@ test('admin validates upload paths, encrypts sequential records, finalizes and f
   const ui = await signedInAdmin(adminFetcher(async (path, options) => {
     uploads.push([path, options]);
     if (options.method === 'POST' && path.endsWith('/packages')) {
-      assert.deepEqual(JSON.parse(options.body), { ttlSeconds: 86400, oneTime: true });
+      assert.deepEqual(JSON.parse(options.body), { ttlSeconds: 86400, oneTime: true, format: 'files' });
       return json({ id: 'pkg-123', uploadToken: 'token', expiresAt: '2099-01-01T00:00:00Z' });
     }
     if (options.method === 'PUT') {
@@ -1323,7 +1323,7 @@ test('admin sends selected reusable mode and displays non-destructive link expir
     ui.$('file-input').files = [new File(['hello'], 'hello.txt', { lastModified: 0 })];
     await ui.$('file-input').dispatch('change');
     await ui.$('upload-button').dispatch('click');
-    assert.deepEqual(createBody, { ttlSeconds: 86400, oneTime: false });
+    assert.deepEqual(createBody, { ttlSeconds: 86400, oneTime: false, format: 'files' });
     assert.match(ui.$('link-expiry').textContent, /repeated downloads/);
     assert.doesNotMatch(ui.$('link-expiry').textContent, /claimed/);
   } finally { ui.restore(); }
@@ -1356,6 +1356,161 @@ test('retrieval activity is paginated, rendered safely, and cleared on signout i
     await next;
     assert.equal(ui.$('retrieval-body').children.length, 0);
     assert.equal(ui.$('retrieval-dialog').open, false);
+    assert.match(calls[0], /cursor=0&limit=100/);
     assert.match(calls[1], /cursor=next&limit=100/);
+  } finally { ui.restore(); }
+});
+
+async function textStream(value, options = {}) {
+  const raw = new Uint8Array(32).fill(17);
+  const key = await importKey(raw);
+  const encoded = serializeText(value);
+  const parts = [];
+  for (const [index, bytes] of [encoded.plaintext, options.bytes || encoded.text].entries()) {
+    const ciphertext = await encryptChunk(key, 'pkg-123', index, bytes);
+    const header = Buffer.alloc(4); header.writeUInt32BE(ciphertext.length);
+    parts.push(header, ciphertext);
+  }
+  if (options.surplus) parts.push(Buffer.from([1]));
+  return { raw, body: Buffer.concat(parts) };
+}
+
+test('one-time text requires explicit view consent, renders literally without downloading, copies and clears on pagehide', async () => {
+  const value = '\ufeffFirst line\n秘密 🔐\n<script>alert(1)</script>';
+  const data = await textStream(value);
+  let claims = 0;
+  const ui = await harness('public', async (_, options) => {
+    if (options.method === 'POST') { claims++; return new Response(data.body); }
+    return json({ status: 'ready', format: 'text', oneTime: true, expiresAt: '2099-01-01T00:00:00Z' });
+  }, { hash: `#${encodeKey(data.raw)}`, picker: () => { throw new Error('Text must not open a save picker'); } });
+  try {
+    await until(() => ui.$('package-state').textContent === 'Ready');
+    assert.equal(claims, 0);
+    assert.equal(ui.$('package-format').textContent, 'Plain TXT');
+    assert.equal(ui.$('download-button').textContent, 'View text');
+    assert.equal(ui.$('download-button').disabled, true);
+    assert.equal(ui.$('fallback-warning').hidden, true);
+    ui.$('download-consent').checked = true;
+    await ui.$('download-button').dispatch('click');
+    assert.equal(claims, 1);
+    assert.equal(ui.$('text-result').hidden, false);
+    assert.equal(ui.$('revealed-text').value, value);
+    assert.equal(ui.blobs.length, 0);
+    assert.equal(ui.$('download-button').hidden, true);
+    await ui.$('copy-text').dispatch('click');
+    assert.equal(ui.win.clipboard, value);
+    assert.equal(ui.$('copy-text-status').textContent, 'Copied.');
+    await ui.win.dispatch('pagehide');
+    assert.equal(ui.$('revealed-text').value, '');
+    assert.equal(ui.$('text-result').hidden, true);
+    assert.equal(ui.$('copy-text-status').textContent, '');
+  } finally { ui.restore(); }
+});
+
+test('reusable text can be viewed repeatedly without consent and clipboard failure offers manual copying', async () => {
+  const data = await textStream('First\nSecond');
+  let claims = 0;
+  const ui = await harness('public', async (_, options) => {
+    if (options.method === 'POST') { claims++; return new Response(data.body); }
+    return json({ status: 'ready', format: 'text', oneTime: false, expiresAt: '2099-01-01T00:00:00Z' });
+  }, { hash: `#${encodeKey(data.raw)}` });
+  try {
+    await until(() => !ui.$('download-button').disabled);
+    assert.equal(ui.$('download-warning').hidden, true);
+    assert.equal(ui.$('consent-label').hidden, true);
+    for (let i = 0; i < 2; i++) await ui.$('download-button').dispatch('click');
+    assert.equal(claims, 2);
+    assert.equal(ui.$('download-button').disabled, false);
+    assert.equal(ui.$('revealed-text').value, 'First\nSecond');
+    navigator.clipboard.writeText = async () => { throw new Error('Denied'); };
+    await ui.$('copy-text').dispatch('click');
+    assert.equal(ui.$('revealed-text').selected, true);
+    assert.match(ui.$('copy-text-status').textContent, /Copy command/);
+    assert.equal(ui.blobs.length, 0);
+  } finally { ui.restore(); }
+});
+
+test('text 429 preserves proof for a new explicit view; extra data and malformed UTF-8 never render plaintext', async () => {
+  for (const corrupt of [{ surplus: true }, { bytes: new Uint8Array([255]) }]) {
+    const data = await textStream('a', corrupt);
+    let claims = 0;
+    const ui = await harness('public', async (_, options) => {
+      if (options.method === 'POST') { claims++; return claims === 1 ? new Response(null, { status: 429 }) : new Response(data.body); }
+      return json({ status: 'ready', format: 'text', oneTime: true, expiresAt: '2099-01-01T00:00:00Z' });
+    }, { hash: `#${encodeKey(data.raw)}` });
+    try {
+      await until(() => ui.$('package-state').textContent === 'Ready');
+      ui.$('download-consent').checked = true;
+      await ui.$('download-button').dispatch('click');
+      assert.equal(ui.$('download-button').disabled, false);
+      assert.equal(ui.$('text-result').hidden, true);
+      await ui.$('download-button').dispatch('click');
+      assert.equal(claims, 2);
+      assert.equal(ui.$('text-result').hidden, true);
+      assert.equal(ui.$('revealed-text').value, '');
+      assert.equal(ui.$('download-button').disabled, true);
+    } finally { ui.restore(); }
+  }
+});
+
+test('text upload sends only encrypted records and metadata, rejects oversized UTF-8 text locally, and clears its editor', async () => {
+  const uploads = [];
+  let created;
+  const ui = await signedInAdmin(adminFetcher(async (path, options) => {
+    uploads.push([path, options]);
+    if (options.method === 'POST' && path.endsWith('/packages')) {
+      created = JSON.parse(options.body);
+      return json({ id: 'pkg-123', uploadToken: 'token', expiresAt: '2099-01-01T00:00:00Z' });
+    }
+    return new Response(null, { status: 204 });
+  }));
+  try {
+    ui.$('package-format').value = 'text';
+    await ui.$('package-format').dispatch('change');
+    assert.equal(ui.$('drop-zone').hidden, true);
+    assert.equal(ui.$('text-editor').hidden, false);
+    ui.$('package-text').value = 'é'.repeat(MAX_TEXT_BYTES / 2 + 1);
+    await ui.$('package-text').dispatch('input');
+    await ui.$('upload-button').dispatch('click');
+    assert.equal(uploads.length, 0);
+    assert.match(ui.$('upload-status').textContent, /8 MiB/);
+    const value = 'Secret multiline\n東京 🔐';
+    ui.$('package-text').value = value;
+    await ui.$('package-text').dispatch('input');
+    await ui.$('upload-button').dispatch('click');
+    assert.deepEqual(created, { ttlSeconds: 86400, oneTime: true, format: 'text' });
+    const puts = uploads.filter(([, options]) => options.method === 'PUT');
+    assert.equal(puts.length, 2);
+    const key = await importKey(decodeKey(ui.$('share-link').value.split('#')[1]));
+    const manifest = parseTextManifest(await decryptChunk(key, 'pkg-123', 0, puts[0][1].body));
+    const text = await decryptChunk(key, 'pkg-123', 1, puts[1][1].body);
+    assert.equal(manifest.size, text.length);
+    assert.equal(new TextDecoder().decode(text), value);
+    assert.ok(!JSON.stringify(uploads).includes(value));
+    assert.equal(ui.$('package-text').value, '');
+    assert.equal(ui.$('upload-button').disabled, true);
+    ui.$('package-text').value = 'Clear on leaving';
+    await ui.win.dispatch('pagehide');
+    assert.equal(ui.$('package-text').value, '');
+  } finally { ui.restore(); }
+});
+
+test('leaving while text arrives cannot restore plaintext or copy controls afterward', async () => {
+  const data = await textStream('Never restore this text');
+  let resolveBody;
+  const ui = await harness('public', async (_, options) => {
+    if (options.method === 'POST') return new Promise(resolve => { resolveBody = resolve; });
+    return json({ status: 'ready', format: 'text', oneTime: false, expiresAt: '2099-01-01T00:00:00Z' });
+  }, { hash: `#${encodeKey(data.raw)}` });
+  try {
+    await until(() => !ui.$('download-button').disabled);
+    const pending = ui.$('download-button').dispatch('click');
+    await until(() => Boolean(resolveBody));
+    await ui.win.dispatch('pagehide');
+    resolveBody(new Response(data.body));
+    await pending;
+    assert.equal(ui.$('revealed-text').value, '');
+    assert.equal(ui.$('text-result').hidden, true);
+    assert.equal(ui.$('download-button').disabled, true);
   } finally { ui.restore(); }
 });

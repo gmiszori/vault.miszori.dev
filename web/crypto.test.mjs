@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createCipheriv, webcrypto } from 'node:crypto';
-import { CHUNK_SIZE, MAX_CIPHERTEXT, MAX_BYTES, MAX_FILES, encodeKey, decodeKey, importKey, chunkParameters, encryptChunk, decryptChunk, validatePath, validateManifest, serializeManifest, parseManifest, FramedReader, deriveClaimToken, claimHash } from './crypto.js';
+import { CHUNK_SIZE, MAX_CIPHERTEXT, MAX_BYTES, MAX_FILES, encodeKey, decodeKey, importKey, chunkParameters, encryptChunk, decryptChunk, validatePath, validateManifest, serializeManifest, parseManifest, FramedReader, deriveClaimToken, claimHash, serializeText, parseTextManifest, MAX_TEXT_BYTES } from './crypto.js';
 
 const entry = (path = 'folder/hello.txt', size = 10) => ({ path, size, lastModified: 1720000000123 });
 const manifest = files => ({ version: 1, files, chunkSize: CHUNK_SIZE });
@@ -150,4 +150,22 @@ test('framed reader rejects truncated, oversized and surplus records', async () 
   const reader = new FramedReader(stream(framed(new Uint8Array(16), new Uint8Array(16))));
   await reader.record();
   await assert.rejects(reader.end(), /extra data/);
+});
+
+test('plain-text manifests enforce UTF-8 sizes, Unicode validity and an 8 MiB payload bound', async () => {
+  const value = 'Line one\n秘密 🔐\n<script>not HTML</script>';
+  const text = serializeText(value);
+  assert.equal(text.chunks, 2);
+  assert.equal(text.bytes, new TextEncoder().encode(value).length);
+  assert.equal(parseTextManifest(text.plaintext).size, text.bytes);
+  assert.equal(new TextDecoder().decode(text.text), value);
+  const max = serializeText('a'.repeat(MAX_TEXT_BYTES));
+  assert.equal(max.bytes, CHUNK_SIZE);
+  assert.ok(max.plaintext.byteLength <= 1024);
+  for (const invalid of ['', '\ud800', 'a'.repeat(MAX_TEXT_BYTES + 1), 'é'.repeat(MAX_TEXT_BYTES / 2 + 1)]) assert.throws(() => serializeText(invalid));
+  for (const invalid of [new Uint8Array(1025), new Uint8Array([255]), new TextEncoder().encode('{}'), new TextEncoder().encode(JSON.stringify({ version: 1, format: 'text', size: MAX_TEXT_BYTES + 1, chunkSize: CHUNK_SIZE })), new TextEncoder().encode(JSON.stringify({ version: 1, format: 'files', size: 1, chunkSize: CHUNK_SIZE }))]) assert.throws(() => parseTextManifest(invalid));
+  const key = await importKey(new Uint8Array(32).fill(8));
+  const ciphertext = await encryptChunk(key, 'text-test', 1, text.text);
+  assert.deepEqual(await decryptChunk(key, 'text-test', 1, ciphertext), text.text);
+  await assert.rejects(decryptChunk(key, 'other-package', 1, ciphertext));
 });

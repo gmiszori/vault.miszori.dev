@@ -31,6 +31,7 @@ const maxPackageBytes int64 = 20*1024*1024*1024 + maxChunks*16 + 8*1024*1024
 type Package struct {
 	ID             string          `json:"id"`
 	OneTime        bool            `json:"oneTime"`
+	Format         string          `json:"format"`
 	RetrievalCount int64           `json:"retrievalCount"`
 	Status         string          `json:"status"`
 	CreatedAt      time.Time       `json:"createdAt"`
@@ -162,12 +163,15 @@ func newServer(root, user, setupToken, origin string, quota int64) (*Server, err
 		if err != nil {
 			return nil, err
 		}
-		d := diskPackage{Package: Package{OneTime: true}}
+		d := diskPackage{Package: Package{OneTime: true, Format: "files"}}
 		if err = json.Unmarshal(b, &d); err != nil {
 			return nil, err
 		}
 		if d.ID != e.Name() {
 			return nil, errors.New("invalid stored package ID")
+		}
+		if d.Format != "files" && d.Format != "text" {
+			return nil, errors.New("invalid stored package format")
 		}
 		p := d.Package
 		p.TokenHash = d.TokenHash
@@ -363,7 +367,7 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			fail(w, 404, "Package already viewed or does not exist")
 			return
 		}
-		writeJSON(w, 200, map[string]any{"status": "ready", "expiresAt": p.ExpiresAt, "oneTime": p.OneTime})
+		writeJSON(w, 200, map[string]any{"status": "ready", "expiresAt": p.ExpiresAt, "oneTime": p.OneTime, "format": p.Format})
 		return
 	}
 	fail(w, 404, "Not found")
@@ -399,11 +403,21 @@ func (s *Server) admin(w http.ResponseWriter, r *http.Request) {
 	}
 	if path == "packages" && r.Method == "POST" {
 		var req struct {
-			TTL     int64 `json:"ttlSeconds"`
-			OneTime *bool `json:"oneTime"`
+			TTL     int64           `json:"ttlSeconds"`
+			OneTime *bool           `json:"oneTime"`
+			Format  json.RawMessage `json:"format"`
 		}
 		if !decode(w, r, &req) {
 			return
+		}
+		format := "files"
+		if req.Format != nil {
+			var value string
+			if err := json.Unmarshal(req.Format, &value); err != nil || (value != "files" && value != "text") {
+				fail(w, 400, "Format must be files or text")
+				return
+			}
+			format = value
 		}
 		if req.TTL < 60 || req.TTL > 30*86400 {
 			fail(w, 400, "Expiry must be between 60 seconds and 30 days")
@@ -422,7 +436,7 @@ func (s *Server) admin(w http.ResponseWriter, r *http.Request) {
 		now := s.now()
 		token := randomID()
 		oneTime := req.OneTime == nil || *req.OneTime
-		p := &Package{ID: randomID(), OneTime: oneTime, Status: "uploading", CreatedAt: now, ExpiresAt: now.Add(time.Duration(req.TTL) * time.Second), TokenHash: hash(token)}
+		p := &Package{ID: randomID(), OneTime: oneTime, Format: format, Status: "uploading", CreatedAt: now, ExpiresAt: now.Add(time.Duration(req.TTL) * time.Second), TokenHash: hash(token)}
 		if err := os.Mkdir(s.dir(p.ID), 0700); err != nil {
 			fail(w, 500, "Storage unavailable")
 			return
@@ -433,7 +447,7 @@ func (s *Server) admin(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		s.packages[p.ID] = p
-		writeJSON(w, 201, map[string]any{"id": p.ID, "uploadToken": token, "expiresAt": p.ExpiresAt, "oneTime": p.OneTime})
+		writeJSON(w, 201, map[string]any{"id": p.ID, "uploadToken": token, "expiresAt": p.ExpiresAt, "oneTime": p.OneTime, "format": p.Format})
 		return
 	}
 	parts := strings.Split(path, "/")
@@ -485,13 +499,29 @@ func (s *Server) admin(w http.ResponseWriter, r *http.Request) {
 			fail(w, 409, "Chunks must be uploaded in order; retries must reuse the next index")
 			return
 		}
+		minBytes, chunkLimit, packageLimit := int64(16), int64(maxChunk), maxPackageBytes
+		if p.Format == "text" {
+			if n >= 2 {
+				fail(w, 400, "Text packages require exactly two records")
+				return
+			}
+			minBytes, chunkLimit = textRecordLimits(n)
+			packageLimit = maxTextPackageBytes
+			if remaining := packageLimit - p.Bytes; remaining < chunkLimit {
+				chunkLimit = remaining
+			}
+			if chunkLimit < minBytes || r.ContentLength > chunkLimit {
+				fail(w, 413, "Text record or package limit exceeded")
+				return
+			}
+		}
 		used := s.storageUsedLocked()
 		f, err := os.OpenFile(s.chunk(p.ID, n)+".tmp", os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0600)
 		if err != nil {
 			fail(w, 500, "Storage unavailable")
 			return
 		}
-		count, err := io.Copy(f, http.MaxBytesReader(w, r.Body, maxChunk))
+		count, err := io.Copy(f, http.MaxBytesReader(w, r.Body, chunkLimit))
 		if err == nil {
 			err = f.Sync()
 		}
@@ -499,7 +529,7 @@ func (s *Server) admin(w http.ResponseWriter, r *http.Request) {
 		if err == nil {
 			err = closeErr
 		}
-		if err != nil || count < 16 || p.Bytes+count > maxPackageBytes || used+count > s.quota {
+		if err != nil || count < minBytes || p.Bytes+count > packageLimit || used+count > s.quota {
 			_ = os.Remove(s.chunk(p.ID, n) + ".tmp")
 			fail(w, 413, "Chunk, package, or storage limit exceeded")
 			return
@@ -529,6 +559,17 @@ func (s *Server) admin(w http.ResponseWriter, r *http.Request) {
 		if req.Chunks != p.Chunks || req.Chunks < 1 || !validClaimHash(req.ClaimHash) {
 			fail(w, 400, "Incomplete package")
 			return
+		}
+		if p.Format == "text" {
+			valid, err := s.validTextRecords(p)
+			if err != nil {
+				fail(w, 500, "Storage unavailable")
+				return
+			}
+			if !valid {
+				fail(w, 400, "Text packages require two records within text size limits")
+				return
+			}
 		}
 		p.Status = "ready"
 		p.ClaimHash = req.ClaimHash

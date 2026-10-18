@@ -1,4 +1,4 @@
-import { CHUNK_SIZE, MAX_BYTES, MAX_FILES, encodeKey, importKey, encryptChunk, serializeManifest, formatBytes, deriveClaimToken, claimHash } from './crypto.js';
+import { CHUNK_SIZE, MAX_BYTES, MAX_FILES, encodeKey, importKey, encryptChunk, serializeManifest, serializeText, formatBytes, deriveClaimToken, claimHash } from './crypto.js';
 
 import { validateLabelKey, validateName, encryptName, decryptName } from './names.js';
 import { validateAuthConfig, deriveAdminKeys, adminAuthorization } from './auth.js';
@@ -49,6 +49,11 @@ function clearSession(status = '') {
   uploadController = null;
   currentPackage = null;
   selected = [];
+  $('package-text').value = '';
+  $('package-format').value = 'files';
+  $('text-editor').hidden = true;
+  $('drop-zone').hidden = false;
+  $('compose-title').textContent = 'Upload files';
   listing = false;
   pendingDelete = null;
   if ($('delete-dialog').open) $('delete-dialog').close();
@@ -255,7 +260,8 @@ function selectionView() {
       $('file-list').append(li);
     }
   }
-  $('upload-button').disabled = uploading || !selected.length || !crypto.subtle;
+  const hasContent = $('package-format').value === 'text' ? Boolean($('package-text').value.length) : Boolean(selected.length);
+  $('upload-button').disabled = uploading || !hasContent || !crypto.subtle;
 }
 
 function describeFiles(files) {
@@ -263,7 +269,7 @@ function describeFiles(files) {
 }
 
 function addFiles(incoming) {
-  if (uploading || !incoming.length) return;
+  if (uploading || $('package-format').value === 'text' || !incoming.length) return;
   try {
     if (selected.length + incoming.length > MAX_FILES) throw new Error('Choose no more than 20,000 files per transfer.');
     const candidates = [...selected, ...incoming];
@@ -279,7 +285,7 @@ function addFiles(incoming) {
 
 function setBusy(value) {
   uploading = value;
-  for (const id of ['file-input', 'folder-input', 'clear-files', 'ttl', 'custom-ttl', 'package-mode', 'logout']) $(id).disabled = value;
+  for (const id of ['file-input', 'folder-input', 'clear-files', 'ttl', 'custom-ttl', 'package-mode', 'package-format', 'package-text', 'logout']) $(id).disabled = value;
   $('package-name').disabled = value || !nameKey;
   $('drop-zone').classList.toggle('disabled', value);
   $('upload-progress').hidden = !value;
@@ -295,13 +301,14 @@ function uploadProgress(completed, total, stage) {
 }
 
 async function upload() {
-  if (uploading || !selected.length) return;
+  const format = $('package-format').value === 'text' ? 'text' : 'files';
+  if (uploading || (format === 'files' ? !selected.length : !$('package-text').value.length)) return;
   let validated;
   let ttlSeconds;
   const oneTime = $('package-mode').value !== 'until-expiry';
   try {
     if (nameKey) validateName($('package-name').value);
-    validated = serializeManifest(describeFiles(selected));
+    validated = format === 'text' ? serializeText($('package-text').value) : serializeManifest(describeFiles(selected));
     ttlSeconds = $('ttl').value === 'custom' ? Number($('custom-ttl').value) * 60 : Number($('ttl').value);
     if (!Number.isSafeInteger(ttlSeconds) || ttlSeconds < 60 || ttlSeconds > 2592000 || ($('ttl').value === 'custom' && !Number.isInteger(Number($('custom-ttl').value)))) throw new Error('Choose an expiry between 1 minute and 30 days, in whole minutes.');
     if (validated.bytes > MAX_BYTES) throw new Error('The package exceeds 20 GiB.');
@@ -326,7 +333,7 @@ async function upload() {
     const key = await importKey(rawKey);
     signal.throwIfAborted();
     // Let creation return its ID even if cancellation is requested, so cleanup can delete it.
-    const created = await (await api('/packages', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ ttlSeconds, oneTime }) })).json();
+    const created = await (await api('/packages', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ ttlSeconds, oneTime, format }) })).json();
     if (session !== loginAttempt) return;
     if (typeof created.id !== 'string' || !/^[A-Za-z0-9_-]{1,128}$/.test(created.id)) throw new Error('The server returned an invalid package identifier. Check Transfer activity for an incomplete package.');
     currentPackage = created.id;
@@ -353,7 +360,13 @@ async function upload() {
       uploadProgress(index, validated.chunks, `Encrypted ${formatBytes(sentBytes)} of ${formatBytes(validated.bytes)} · ${index.toLocaleString()} / ${validated.chunks.toLocaleString()} records`);
     };
     await send(validated.plaintext);
-    for (const file of selected) {
+    if (format === 'text') {
+      sentBytes = validated.bytes;
+      await send(validated.text);
+      validated.text.fill(0);
+      $('package-text').value = '';
+    }
+    for (const file of format === 'files' ? selected : []) {
       for (let offset = 0; offset < file.size; offset += CHUNK_SIZE) {
         signal.throwIfAborted();
         const bytes = new Uint8Array(await file.slice(offset, offset + CHUNK_SIZE).arrayBuffer());
@@ -372,7 +385,7 @@ async function upload() {
     });
     signal.throwIfAborted();
     $('share-link').value = `${publicOrigin}/package/${currentPackage}#${encodeKey(rawKey)}`;
-    $('link-expiry').textContent = `Expires ${new Date(created.expiresAt).toLocaleString()}${oneTime ? ', or immediately after it is claimed.' : '. Available for repeated downloads until then.'}`;
+    $('link-expiry').textContent = `Expires ${new Date(created.expiresAt).toLocaleString()}${oneTime ? ', or immediately after it is claimed.' : `. Available for repeated ${format === 'text' ? 'views' : 'downloads'} until then.`}`;
     $('result-panel').hidden = false;
     message('upload-status', 'Encrypted, uploaded, and ready. Copy the share link below.');
     selected = [];
@@ -394,6 +407,7 @@ async function upload() {
     }
     message('upload-status', `${signal.aborted ? 'Upload cancelled.' : error.message || 'Upload failed. Uploads are never retried.'}${cleanup}`, true);
   } finally {
+    validated.text?.fill(0);
     rawKey.fill(0);
     uploadToken = '';
     if (session !== loginAttempt) return;
@@ -585,7 +599,7 @@ async function renderList() {
     td.append(state);
     const mode = document.createElement('span');
     mode.className = 'table-secondary';
-    mode.textContent = item.oneTime === false ? 'Until expiry' : 'One-time';
+    mode.textContent = `${item.oneTime === false ? 'Until expiry' : 'One-time'}${item.format === 'text' ? ' · Plain TXT' : ''}`;
     td.append(mode);
     row.append(td);
     cell(row, date(item.createdAt), `Expires ${date(item.expiresAt)}`);
@@ -658,6 +672,18 @@ for (const id of ['file-input', 'folder-input']) $(id).addEventListener('change'
 });
 $('clear-files').addEventListener('click', () => { selected = []; selectionView(); message('upload-status', ''); });
 $('ttl').addEventListener('change', () => { $('custom-ttl-field').hidden = $('ttl').value !== 'custom'; });
+$('package-format').addEventListener('change', () => {
+  if (uploading) return;
+  const text = $('package-format').value === 'text';
+  $('text-editor').hidden = !text;
+  $('drop-zone').hidden = text;
+  $('compose-title').textContent = text ? 'Share text' : 'Upload files';
+  if (text) selected = [];
+  else $('package-text').value = '';
+  selectionView();
+  message('upload-status', '');
+});
+$('package-text').addEventListener('input', selectionView);
 $('upload-button').addEventListener('click', upload);
 $('abort-upload').addEventListener('click', () => {
   uploadController?.abort();

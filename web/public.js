@@ -1,4 +1,4 @@
-import { CHUNK_SIZE, MEMORY_LIMIT, decodeKey, importKey, decryptChunk, parseManifest, FramedReader, formatBytes, deriveClaimToken } from './crypto.js';
+import { CHUNK_SIZE, MEMORY_LIMIT, decodeKey, importKey, decryptChunk, parseManifest, parseTextManifest, FramedReader, formatBytes, deriveClaimToken } from './crypto.js';
 import { ZipWriter, archiveSize } from './zip.js';
 import { prepareServiceWorkerDownload } from './download.js';
 
@@ -12,6 +12,7 @@ let blobFallbackOffered = !supportsLocalStreaming;
 let keyBytes;
 let available = false;
 let oneTime = true;
+let packageFormat = 'files';
 let busy = false;
 let expiresAt = 0;
 let controller;
@@ -75,6 +76,7 @@ async function download() {
     status('This package has expired. Ask the sender for a new link.', true);
     return;
   }
+  if (packageFormat === 'text') { await viewText(); return; }
   busy = true;
   updateButton();
   status('Choose a destination. The transfer has not started yet.');
@@ -229,8 +231,95 @@ async function download() {
   }
 }
 
+function clearText() {
+  $('revealed-text').value = '';
+  $('text-result').hidden = true;
+  $('copy-text-status').textContent = '';
+}
+
+async function viewText() {
+  busy = true;
+  updateButton();
+  clearText();
+  const attempt = initialization;
+  let started = false;
+  let unavailableResponse = false;
+  let frames;
+  let plaintext;
+  controller = new AbortController();
+  const signal = controller.signal;
+  $('cancel-download').hidden = false;
+  status('Decrypting text…');
+  try {
+    const key = await importKey(keyBytes);
+    const token = await deriveClaimToken(keyBytes, route[1]);
+    signal.throwIfAborted();
+    started = true;
+    available = false;
+    packageState('Opening');
+    const response = await fetch(`/api/packages/${encodeURIComponent(route[1])}/consume`, {
+      method: 'POST', headers: { 'X-Claim-Token': token }, signal,
+      credentials: 'omit', cache: 'no-store', referrerPolicy: 'no-referrer'
+    });
+    if (response.status === 429) {
+      started = false;
+      await response.body?.cancel();
+      throw new Error('The server is busy. Nothing has been opened. Try again.');
+    }
+    if (!response.ok) {
+      unavailableResponse = [404, 409, 410].includes(response.status);
+      await response.body?.cancel();
+      throw new Error(unavailableResponse ? 'This package is unavailable.' : 'Could not open the text package.');
+    }
+    frames = new FramedReader(response.body);
+    const manifestBytes = await decryptChunk(key, route[1], 0, await frames.record());
+    const manifest = parseTextManifest(manifestBytes);
+    manifestBytes.fill(0);
+    plaintext = await decryptChunk(key, route[1], 1, await frames.record());
+    if (plaintext.byteLength !== manifest.size) throw new Error('Text size does not match its encrypted manifest.');
+    const text = new TextDecoder('utf-8', { fatal: true, ignoreBOM: true }).decode(plaintext);
+    await frames.end();
+    signal.throwIfAborted();
+    if (attempt !== initialization) return;
+    $('revealed-text').value = text;
+    $('text-result').hidden = false;
+    $('package-title').textContent = 'Package text';
+    $('package-description').textContent = oneTime ? 'The server copy has been destroyed.' : '';
+    $('consent-label').hidden = true;
+    $('download-warning').hidden = true;
+    if (oneTime) {
+      keyBytes?.fill(0);
+      keyBytes = null;
+      $('download-button').hidden = true;
+      $('availability').textContent = 'Opened — no longer on the server';
+      packageState('Viewed');
+    } else {
+      available = Date.now() < expiresAt;
+      packageState(available ? 'Ready' : 'Unavailable');
+    }
+    status('Text decrypted.');
+  } catch (error) {
+    if (attempt !== initialization) return;
+    clearText();
+    available = (!oneTime || !started) && !unavailableResponse && Boolean(keyBytes) && Date.now() < expiresAt;
+    packageState(available ? 'Ready' : 'Unavailable');
+    status(`${error.name === 'AbortError' ? 'Opening cancelled.' : error.message}${oneTime && started ? ' This one-time package cannot be opened again.' : available ? ' You can try again before expiry.' : ''}`, true);
+    if (!available) { keyBytes?.fill(0); keyBytes = null; }
+    controller.abort();
+    await frames?.cancel();
+  } finally {
+    plaintext?.fill(0);
+    if (attempt === initialization) {
+      busy = false;
+      $('cancel-download').hidden = true;
+      updateButton();
+    }
+  }
+}
+
 async function initialize() {
   const attempt = ++initialization;
+  clearText();
   available = false;
   keyBytes?.fill(0);
   keyBytes = null;
@@ -269,10 +358,19 @@ async function initialize() {
     if (info.status !== 'ready' || !Number.isFinite(expiresAt) || expiresAt <= Date.now()) throw new Error('');
     if (info.oneTime !== undefined && typeof info.oneTime !== 'boolean') throw new Error('Invalid package mode.');
     oneTime = info.oneTime !== false;
+    if (info.format !== undefined && !['files', 'text'].includes(info.format)) throw new Error('Invalid package format.');
+    packageFormat = info.format || 'files';
+    const text = packageFormat === 'text';
+    $('package-format').textContent = text ? 'Plain TXT' : 'ZIP archive';
+    $('package-title').textContent = text ? 'Package ready to view' : 'Package ready to download';
+    $('warning-title').textContent = text ? 'One-time view' : 'One-time download';
+    $('warning-description').textContent = text ? 'Viewing this text destroys the server copy, even if opening fails or is cancelled. It cannot be opened again; copy the text before leaving.' : 'Starting the transfer claims and destroys the server copy, even if the download fails or is cancelled. It cannot be resumed; ask the sender for a new package.';
+    $('consent-text').textContent = text ? 'I understand this text can only be opened once, even if opening fails or I cancel.' : 'I understand this download cannot be repeated, even if it fails or I cancel.';
+    if (text) $('fallback-warning').hidden = true;
     $('download-warning').hidden = !oneTime;
     $('consent-label').hidden = !oneTime;
-    $('download-button').textContent = oneTime ? 'Download and destroy' : 'Download';
-    $('cancel-download').textContent = oneTime ? 'Cancel transfer (irreversible)' : 'Cancel transfer';
+    $('download-button').textContent = text ? 'View text' : oneTime ? 'Download and destroy' : 'Download';
+    $('cancel-download').textContent = text ? (oneTime ? 'Cancel view (irreversible)' : 'Cancel view') : oneTime ? 'Cancel transfer (irreversible)' : 'Cancel transfer';
     $('fallback-description').textContent = oneTime ? 'This browser can save ZIP archives up to 128 MiB, including archive overhead. The encrypted size is unknown until you start and claim the one-time download. A larger package will be lost. For large or unknown sizes, use desktop Chrome or Edge with “Save As” support.' : 'This browser can save ZIP archives up to 128 MiB. For larger packages use a browser with streaming downloads, such as desktop Chrome or Edge. The package remains available until expiry.';
     available = true;
     packageState('Ready');
@@ -300,6 +398,21 @@ async function initialize() {
   updateButton();
 }
 
+$('copy-text').addEventListener('click', async () => {
+  if ($('text-result').hidden) return;
+  const attempt = initialization;
+  try {
+    if (!navigator.clipboard?.writeText) throw new Error('Clipboard unavailable');
+    await navigator.clipboard.writeText($('revealed-text').value);
+    if (attempt === initialization && !$('text-result').hidden) $('copy-text-status').textContent = 'Copied.';
+  } catch {
+    if (attempt !== initialization || $('text-result').hidden) return;
+    $('revealed-text').focus();
+    $('revealed-text').select();
+    $('copy-text-status').textContent = 'Text selected. Use your browser’s Copy command.';
+  }
+});
+
 $('download-consent').addEventListener('change', updateButton);
 $('download-button').addEventListener('click', download);
 $('cancel-download').addEventListener('click', () => controller?.abort());
@@ -312,6 +425,7 @@ window.addEventListener('hashchange', () => {
   initialize();
 });
 window.addEventListener('pagehide', () => {
+  clearText();
   ++initialization;
   controller?.abort();
   keyBytes?.fill(0);
