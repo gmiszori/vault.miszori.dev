@@ -745,11 +745,18 @@ test('deployment and module defaults consistently use the vault namespace', asyn
   assert.match(docker, /ENTRYPOINT \["\/vault"\]/);
 });
 
-test('share artwork includes the generic system description without adding card description text', async () => {
+test('messaging artwork is a square icon with matching metadata and no cropped embedded text', async () => {
   const generator = await readFile(new URL('../tools/generate-preview.py', import.meta.url), 'utf8');
   const html = await readFile(new URL('./index.html', import.meta.url), 'utf8');
-  assert.ok(generator.includes('"Encrypted file and secret sharing system."'));
-  assert.equal((html.match(/share-preview\.png\?v=5/g) || []).length, 2);
+  const png = await readFile(new URL('./share-preview.png', import.meta.url));
+  assert.deepEqual([...png.subarray(0, 8)], [137, 80, 78, 71, 13, 10, 26, 10]);
+  assert.equal(png.readUInt32BE(16), 1024);
+  assert.equal(png.readUInt32BE(20), 1024);
+  assert.doesNotMatch(generator, /draw\.text|ImageFont/);
+  assert.equal((html.match(/share-preview\.png\?v=6/g) || []).length, 2);
+  assert.match(html, /property="og:image:width" content="1024"/);
+  assert.match(html, /property="og:image:height" content="1024"/);
+  assert.match(html, /name="twitter:card" content="summary"/);
   assert.match(html, /property="og:description" content=""/);
   assert.match(html, /name="twitter:description" content=""/);
 });
