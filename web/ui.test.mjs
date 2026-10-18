@@ -152,6 +152,8 @@ test('public opening removes the key and only explicit consent consumes; fallbac
     assert.equal(calls[0][1].method, undefined);
     assert.equal(ui.replaced.length, 1);
     assert.equal(ui.$('fallback-warning').hidden, false);
+    assert.equal(ui.$('download-button').textContent, 'Download package');
+    assert.equal(ui.$('consent-text').textContent, 'I understand that this is a one-time download package.');
     await ui.$('download-button').dispatch('click');
     assert.equal(calls.length, 1);
     ui.$('download-consent').checked = true;
@@ -743,11 +745,11 @@ test('deployment and module defaults consistently use the vault namespace', asyn
   assert.match(docker, /ENTRYPOINT \["\/vault"\]/);
 });
 
-test('share artwork includes the generic receipt message without adding card description text', async () => {
+test('share artwork includes the generic system description without adding card description text', async () => {
   const generator = await readFile(new URL('../tools/generate-preview.py', import.meta.url), 'utf8');
   const html = await readFile(new URL('./index.html', import.meta.url), 'utf8');
-  assert.ok(generator.includes('"You have received an encrypted package."'));
-  assert.equal((html.match(/share-preview\.png\?v=4/g) || []).length, 2);
+  assert.ok(generator.includes('"Encrypted file and secret sharing system."'));
+  assert.equal((html.match(/share-preview\.png\?v=5/g) || []).length, 2);
   assert.match(html, /property="og:description" content=""/);
   assert.match(html, /name="twitter:description" content=""/);
 });
@@ -1387,10 +1389,10 @@ test('one-time text requires explicit view consent, renders literally without do
     await until(() => ui.$('package-state').textContent === 'Ready');
     assert.equal(claims, 0);
     assert.equal(ui.$('package-format').textContent, 'Plain TXT');
-    assert.equal(ui.$('download-button').textContent, 'View secret');
+    assert.equal(ui.$('download-button').textContent, 'Reveal secret');
     assert.equal(ui.$('package-title').textContent, 'Secret ready to view');
     assert.match(ui.$('warning-description').textContent, /Viewing this secret destroys/);
-    assert.match(ui.$('consent-text').textContent, /I understand that this secret can only be/);
+    assert.equal(ui.$('consent-text').textContent, 'I understand that this is a one-time reveal secret.');
     assert.equal(ui.$('download-button').disabled, true);
     assert.equal(ui.$('fallback-warning').hidden, true);
     ui.$('download-consent').checked = true;

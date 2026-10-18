@@ -365,11 +365,11 @@ async function initialize() {
     $('package-title').textContent = text ? 'Secret ready to view' : 'Package ready to download';
     $('warning-title').textContent = text ? 'One-time view' : 'One-time download';
     $('warning-description').textContent = text ? 'Viewing this secret destroys the server copy, even if opening fails or is cancelled. It cannot be opened again; copy the secret before leaving.' : 'Starting the transfer claims and destroys the server copy, even if the download fails or is cancelled. It cannot be resumed; ask the sender for a new package.';
-    $('consent-text').textContent = text ? 'I understand that this secret can only be opened once, even if opening fails or I cancel.' : 'I understand this download cannot be repeated, even if it fails or I cancel.';
+    $('consent-text').textContent = text ? 'I understand that this is a one-time reveal secret.' : 'I understand that this is a one-time download package.';
     if (text) $('fallback-warning').hidden = true;
     $('download-warning').hidden = !oneTime;
     $('consent-label').hidden = !oneTime;
-    $('download-button').textContent = text ? 'View secret' : oneTime ? 'Download and destroy' : 'Download';
+    $('download-button').textContent = text ? 'Reveal secret' : oneTime ? 'Download package' : 'Download';
     $('cancel-download').textContent = text ? (oneTime ? 'Cancel view (irreversible)' : 'Cancel view') : oneTime ? 'Cancel transfer (irreversible)' : 'Cancel transfer';
     $('fallback-description').textContent = oneTime ? 'This browser can save ZIP archives up to 128 MiB, including archive overhead. The encrypted size is unknown until you start and claim the one-time download. A larger package will be lost. For large or unknown sizes, use desktop Chrome or Edge with “Save As” support.' : 'This browser can save ZIP archives up to 128 MiB. For larger packages use a browser with streaming downloads, such as desktop Chrome or Edge. The package remains available until expiry.';
     available = true;

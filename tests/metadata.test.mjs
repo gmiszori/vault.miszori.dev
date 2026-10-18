@@ -116,7 +116,7 @@ test('messaging previews are generic, server-rendered, and never claim or audit 
       assert.equal(response.status, 200); const html = await response.text();
       assert.match(html, /property="og:title" content="vault\.miszori\.dev"/);
       assert.match(html, /name="twitter:card" content="summary_large_image"/);
-      assert.ok(html.includes(`content='${pub}/share-preview.png?v=4'`));
+      assert.ok(html.includes(`content='${pub}/share-preview.png?v=5'`));
       assert.match(html, /property="og:description" content=""/);
       assert.match(html, /name="twitter:description" content=""/);
       assert.equal(html.includes('Server logs include'), false);

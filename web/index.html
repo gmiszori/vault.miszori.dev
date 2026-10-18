@@ -12,16 +12,16 @@
   <meta property="og:site_name" content="vault.miszori.dev">
   <meta property="og:title" content="vault.miszori.dev">
   <meta property="og:description" content="">
-  <meta property="og:image" content='{{env "PUBLIC_ORIGIN"}}/share-preview.png?v=4'>
+  <meta property="og:image" content='{{env "PUBLIC_ORIGIN"}}/share-preview.png?v=5'>
   <meta property="og:image:type" content="image/png">
   <meta property="og:image:width" content="1200">
   <meta property="og:image:height" content="630">
-  <meta property="og:image:alt" content="vault.miszori.dev — You have received an encrypted package.">
+  <meta property="og:image:alt" content="vault.miszori.dev — Encrypted file and secret sharing system.">
   <meta name="twitter:card" content="summary_large_image">
   <meta name="twitter:title" content="vault.miszori.dev">
   <meta name="twitter:description" content="">
-  <meta name="twitter:image" content='{{env "PUBLIC_ORIGIN"}}/share-preview.png?v=4'>
-  <meta name="twitter:image:alt" content="vault.miszori.dev — You have received an encrypted package.">
+  <meta name="twitter:image" content='{{env "PUBLIC_ORIGIN"}}/share-preview.png?v=5'>
+  <meta name="twitter:image:alt" content="vault.miszori.dev — Encrypted file and secret sharing system.">
   <link rel="icon" type="image/svg+xml" href="/favicon.svg">
   <link rel="stylesheet" href="/styles.css">
   <script type="module" src="/public.js"></script>
@@ -39,8 +39,8 @@
         <dl id="package-facts" class="package-facts"><div><dt>Available</dt><dd id="availability">Checking…</dd></div><div><dt>Format</dt><dd id="package-format">ZIP archive</dd></div></dl>
         <div id="download-warning" class="notice warning one-time-warning"><strong id="warning-title">One-time download</strong><p id="warning-description">Starting the transfer claims and destroys the server copy, even if the download fails or is cancelled. It cannot be resumed; ask the sender for a new package.</p></div>
         <div id="fallback-warning" class="notice warning" hidden><strong>128 MiB browser limit</strong><p id="fallback-description">This browser can save ZIP archives up to 128 MiB, including archive overhead. The encrypted size is unknown until you start and claim the one-time download. A larger package will be lost. For large or unknown sizes, use desktop Chrome or Edge with “Save As” support.</p></div>
-        <label id="consent-label" class="check-row"><input id="download-consent" type="checkbox"><span id="consent-text">I understand this download cannot be repeated, even if it fails or I cancel.</span></label>
-        <button id="download-button" class="button primary full-width" type="button" disabled>Download and destroy</button>
+        <label id="consent-label" class="check-row"><input id="download-consent" type="checkbox"><span id="consent-text">I understand that this is a one-time download package.</span></label>
+        <button id="download-button" class="button primary full-width" type="button" disabled>Download package</button>
         <div id="download-progress" class="progress-area" hidden><div class="progress-copy"><span id="download-stage">Preparing…</span><span id="download-percent">0%</span></div><progress id="download-meter" value="0" max="100" aria-label="Download progress"></progress></div>
         <button id="cancel-download" type="button" class="text-button danger" hidden>Cancel transfer (irreversible)</button>
         <p id="download-status" class="status-message" role="status" aria-live="polite"></p>
