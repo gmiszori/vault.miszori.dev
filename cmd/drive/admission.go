@@ -75,12 +75,13 @@ func (b *minuteBucket) allow(now time.Time, limit int) bool {
 }
 
 type requestGate struct {
-	limits       gateLimits
-	requests     chan struct{}
-	downloads    chan struct{}
-	uploads      chan struct{}
-	public       minuteBucket
-	authFailures minuteBucket
+	limits         gateLimits
+	requests       chan struct{}
+	downloads      chan struct{}
+	uploads        chan struct{}
+	public         minuteBucket
+	adminDiscovery minuteBucket
+	authFailures   minuteBucket
 }
 
 func newRequestGate(limits gateLimits) *requestGate {
@@ -94,7 +95,7 @@ func newRequestGate(limits gateLimits) *requestGate {
 
 func (g *requestGate) acquire(r *http.Request) (release func(), ok bool) {
 	slots := []chan struct{}{g.requests}
-	parts := strings.Split(strings.TrimPrefix(r.URL.Path, "/"), "/")
+	parts := strings.Split(strings.Trim(r.URL.Path, "/"), "/")
 	if r.Method == http.MethodPost && len(parts) == 4 && parts[0] == "api" && parts[1] == "packages" && parts[2] != "" && parts[3] == "consume" {
 		slots = append(slots, g.downloads)
 	}
@@ -123,6 +124,10 @@ func (g *requestGate) acquire(r *http.Request) (release func(), ok bool) {
 
 func (g *requestGate) allowPublic(now time.Time) bool {
 	return g.public.allow(now, g.limits.publicPerMinute)
+}
+
+func (g *requestGate) allowAdminDiscovery(now time.Time) bool {
+	return g.adminDiscovery.allow(now, g.limits.publicPerMinute)
 }
 
 func (g *requestGate) allowAuthFailure(now time.Time) bool {

@@ -141,6 +141,8 @@ func TestRequestGatePathClassification(t *testing.T) {
 		download, upload int
 	}{
 		{"POST", "/api/packages/x/consume", 1, 0},
+		{"POST", "/api/packages/x/consume/", 1, 0},
+		{"POST", "//api/packages/x/consume//", 1, 0},
 		{"PUT", "/api/admin/packages/x/chunks/0", 0, 1},
 		{"GET", "/api/packages/x/consume", 0, 0},
 		{"POST", "/api/packages/x/consume/extra", 0, 0},

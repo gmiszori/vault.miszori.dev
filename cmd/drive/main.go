@@ -285,7 +285,7 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		if r.URL.Path == "/api/admin/auth" && r.Method == http.MethodGet {
-			if !s.gate.allowPublic(s.now()) || !s.allowed("discovery:"+peerIP(r), 20) {
+			if !s.allowed("discovery:"+peerIP(r), 20) || !s.gate.allowAdminDiscovery(s.now()) {
 				fail(w, 429, "Too many requests")
 				return
 			}
@@ -299,7 +299,7 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		if r.URL.Path == "/api/admin/setup" && r.Method == http.MethodPost {
-			if !s.gate.allowPublic(s.now()) {
+			if !s.gate.allowAdminDiscovery(s.now()) {
 				fail(w, 429, "Too many requests")
 				return
 			}
@@ -313,7 +313,7 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		s.admin(w, r)
 		return
 	}
-	if !s.gate.allowPublic(s.now()) || !s.allowed("public:"+peerIP(r), 120) {
+	if !s.allowed("public:"+peerIP(r), 120) || !s.gate.allowPublic(s.now()) {
 		fail(w, 429, "Too many requests")
 		return
 	}
