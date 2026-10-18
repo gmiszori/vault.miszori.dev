@@ -745,7 +745,7 @@ test('deployment and module defaults consistently use the vault namespace', asyn
   assert.match(docker, /ENTRYPOINT \["\/vault"\]/);
 });
 
-test('messaging previews preserve the wide banner and offer a separate square icon', async () => {
+test('messaging previews advertise only the wide banner and keep the square icon for touch devices', async () => {
   const generator = await readFile(new URL('../tools/generate-preview.py', import.meta.url), 'utf8');
   const html = await readFile(new URL('./index.html', import.meta.url), 'utf8');
   for (const [name, width, height] of [['share-preview.png', 1200, 630], ['share-icon.png', 1024, 1024]]) {
@@ -755,12 +755,13 @@ test('messaging previews preserve the wide banner and offer a separate square ic
     assert.equal(png.readUInt32BE(20), height);
   }
   assert.ok(generator.includes('"Encrypted file and secret sharing system."'));
-  assert.equal((html.match(/share-preview\.png\?v=7/g) || []).length, 2);
+  assert.equal((html.match(/share-preview\.png\?v=8/g) || []).length, 2);
   assert.match(html, /property="og:image:width" content="1200"/);
   assert.match(html, /property="og:image:height" content="630"/);
-  assert.match(html, /property="og:image:width" content="1024"/);
-  assert.match(html, /property="og:image:height" content="1024"/);
-  assert.ok(html.indexOf('/share-preview.png') < html.indexOf('/share-icon.png'));
+  assert.equal((html.match(/property="og:image"/g) || []).length, 1);
+  assert.equal((html.match(/name="twitter:image"/g) || []).length, 1);
+  assert.doesNotMatch(html, /<meta[^>]+content=['"][^'"\n]*share-icon\.png/);
+  for (const field of ['type', 'width', 'height', 'alt']) assert.equal((html.match(new RegExp(`property="og:image:${field}"`, 'g')) || []).length, 1);
   assert.match(html, /<link rel="apple-touch-icon" href="\/share-icon.png">/);
   assert.match(html, /name="twitter:card" content="summary_large_image"/);
   assert.match(html, /property="og:description" content=""/);
