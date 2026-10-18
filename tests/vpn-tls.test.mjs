@@ -5,18 +5,19 @@ import { mkdtemp, readFile, writeFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import https from 'node:https';
+import http from 'node:http';
 import { checkServerIdentity } from 'node:tls';
 
 const root = resolve(import.meta.dirname, '..');
 const docker = (...args) => execFileSync('docker', args, { encoding: 'utf8', timeout: 60000, stdio: ['ignore', 'pipe', 'pipe'] }).trim();
 
-function request(port, path, hostname, ca, sendSNI = true) {
+function request(port, path, hostname, ca, sendSNI = true, hostHeader = hostname) {
   return new Promise((resolve, reject) => {
     const req = https.get({
       hostname: '127.0.0.1', port, path, ca,
       servername: sendSNI ? hostname : '',
       checkServerIdentity: (_, cert) => checkServerIdentity(hostname, cert),
-      headers: { Host: hostname }, timeout: 5000,
+      headers: { Host: hostHeader }, timeout: 5000,
     }, res => {
       const chunks = [];
       res.on('data', chunk => chunks.push(chunk));
@@ -27,7 +28,18 @@ function request(port, path, hostname, ca, sendSNI = true) {
   });
 }
 
-test('production VPN IP serves admin with a verified local certificate, including clients without SNI', { timeout: 90000 }, async () => {
+function plainRequest(port, path, host) {
+  return new Promise((resolve, reject) => {
+    const req = http.get({ hostname: '127.0.0.1', port, path, headers: { Host: host }, timeout: 5000 }, res => {
+      res.resume();
+      res.on('end', () => resolve(res));
+    });
+    req.on('timeout', () => req.destroy(new Error('HTTP request timed out')));
+    req.on('error', reject);
+  });
+}
+
+test('production VPN IP serves admin while public listeners abort IP and unknown-host requests', { timeout: 90000 }, async () => {
   const compose = await readFile(join(root, 'compose.yaml'), 'utf8');
   const image = /image: (caddy:[^\s]+)/.exec(compose)[1];
   const dir = await mkdtemp(join(tmpdir(), 'drive-vpn-tls-'));
@@ -49,11 +61,12 @@ test('production VPN IP serves admin with a verified local certificate, includin
     await writeFile(join(dir, 'caddy.json'), JSON.stringify(adapted));
     docker('run', '--rm', '-v', `${dir}:/test:ro`, image, 'caddy', 'validate', '--config', '/test/caddy.json');
     docker('run', '-d', '--name', name,
-      '-p', '127.0.0.1::443', '-p', '127.0.0.1::8443', '-p', '127.0.0.1::8081',
+      '-p', '127.0.0.1::80', '-p', '127.0.0.1::443', '-p', '127.0.0.1::8443', '-p', '127.0.0.1::8081',
       '-v', `${dir}:/test:ro`, '-v', `${join(root, 'web')}:/srv:ro`,
       image, 'caddy', 'run', '--config', '/test/caddy.json');
     started = true;
     const ports = JSON.parse(docker('inspect', '--format', '{{json .NetworkSettings.Ports}}', name));
+    const publicPlainPort = Number(ports['80/tcp'][0].HostPort);
     const publicPort = Number(ports['443/tcp'][0].HostPort);
     const vpnPort = Number(ports['8443/tcp'][0].HostPort);
     const httpPort = Number(ports['8081/tcp'][0].HostPort);
@@ -81,6 +94,20 @@ test('production VPN IP serves admin with a verified local certificate, includin
     assert.equal(redirect.headers.get('location'), 'https://10.0.0.1/admin?test=1');
     const home = await request(publicPort, '/', 'drive.example', ca);
     assert.equal(home.headers.location, 'https://gergo.miszori.dev');
+    const packagePage = await request(publicPort, '/package/example', 'drive.example', ca);
+    assert.equal(packagePage.status, 200);
+    assert.match(packagePage.body, /Checking package availability/);
+    assert.equal((await request(publicPort, '/public.js', 'drive.example', ca)).status, 200);
+    const publicRedirect = await plainRequest(publicPlainPort, '/package/example', 'drive.example');
+    assert.equal(publicRedirect.statusCode, 308);
+    assert.equal(publicRedirect.headers.location, 'https://drive.example/package/example');
+    for (const host of ['192.0.2.10', '10.0.0.1', 'unknown.example']) {
+      for (const path of ['/', '/admin', '/package/example']) {
+        await assert.rejects(plainRequest(publicPlainPort, path, host), { code: 'ECONNRESET' });
+        await assert.rejects(request(publicPort, path, 'drive.example', ca, true, host), { code: 'ECONNRESET' });
+      }
+    }
+    await assert.rejects(request(publicPort, '/admin', '10.0.0.1', ca, false), { code: 'ECONNRESET' });
   } finally {
     if (started) docker('rm', '-f', '-v', name);
     await rm(dir, { recursive: true, force: true });

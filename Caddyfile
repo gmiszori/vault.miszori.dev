@@ -54,6 +54,14 @@
 	}
 }
 
+:80 {
+	abort
+}
+
+https://:443 {
+	abort
+}
+
 http://{$DOMAIN} {
 	handle / {
 		redir https://gergo.miszori.dev 302

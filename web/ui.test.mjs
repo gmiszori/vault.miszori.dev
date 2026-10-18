@@ -721,8 +721,9 @@ test('entrypoints use the exact brand, dark scheme, and task-focused copy', asyn
   assert.match(publicHTML, /unknown until you start and claim the one-time download/);
   assert.match(publicHTML, /desktop Chrome or Edge/);
   const adminHTML = await readFile(new URL('./admin.html', import.meta.url), 'utf8');
-  assert.match(adminHTML, /Expiry starts at package creation and includes upload time/);
-  assert.match(adminHTML, /class="notice warning one-time-warning"><p>One-time download:/);
+  assert.match(adminHTML, /Includes upload time/);
+  assert.match(adminHTML, /class="upload-options"/);
+  assert.doesNotMatch(adminHTML, /one-time-warning/);
   assert.match(adminHTML, /key is not saved and cannot be recovered/);
   assert.match(adminHTML, /id="result-panel"[^>]*hidden/);
 });

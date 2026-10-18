@@ -99,7 +99,17 @@ progress.is-complete { accent-color: var(--success); }
 progress.is-complete::-webkit-progress-value { background: var(--success); }
 progress.is-complete::-moz-progress-bar { background: var(--success); }
 #save-archive { margin-top: 16px; }
-.drop-zone { padding: 20px; border: 1px dashed var(--line); border-radius: 6px; }
+.composer { padding: 20px; }
+.composer h1 { margin-bottom: 12px; font-size: 23px; }
+.drop-zone { display: flex; align-items: center; flex-wrap: wrap; gap: 10px 16px; padding: 14px; border: 1px dashed var(--line); border-radius: 6px; }
+.drop-zone > p { margin: 0; }
+.drop-zone > .fine-print { flex-basis: 100%; }
+.upload-options { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 2fr); gap: 12px 16px; margin: 16px 0; }
+.upload-options > div { min-width: 0; }
+.upload-options .fine-print { margin-top: 6px; }
+@media (max-width: 600px) {
+  .upload-options { grid-template-columns: minmax(0, 1fr); }
+}
 .drop-zone.drag-over { border-color: var(--focus); background: var(--input); }
 .drop-zone.disabled { opacity: .55; }
 .file-actions { display: flex; flex-wrap: wrap; gap: 12px; }

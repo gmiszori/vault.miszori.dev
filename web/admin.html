@@ -32,15 +32,16 @@
       <section class="panel composer" aria-labelledby="compose-title">
         <h1 id="compose-title">Upload files</h1>
         <div id="drop-zone" class="drop-zone">
-          <p>Drop files here or choose files or a folder.</p>
+          <p>Drop files here.</p>
           <div class="file-actions"><label class="button primary small file-picker">Choose files<input id="file-input" type="file" multiple></label><label class="button quiet small file-picker">Choose folder<input id="folder-input" type="file" webkitdirectory multiple></label></div>
           <p class="fine-print">Up to 20 GiB · 20,000 files. Empty folders are not included.</p>
         </div>
         <div id="selection" class="selection" hidden><div class="selection-heading"><strong id="selection-summary"></strong><button id="clear-files" class="text-button" type="button">Clear</button></div><ul id="file-list" class="file-list" aria-label="Selected files"></ul></div>
-        <div class="field-row"><div><label for="ttl">Expires after</label><select id="ttl"><option value="3600">1 hour</option><option value="86400" selected>24 hours</option><option value="259200">3 days</option><option value="604800">7 days</option><option value="2592000">30 days</option><option value="custom">Custom duration</option></select></div><div id="custom-ttl-field" hidden><label for="custom-ttl">Minutes (1–43,200)</label><input id="custom-ttl" type="number" min="1" max="43200" step="1" value="60"></div></div>
-        <p class="fine-print">Expiry starts at package creation and includes upload time.</p>
-        <div class="field-row"><div><label for="package-name">Package name (optional)</label><input id="package-name" type="text" autocomplete="off" spellcheck="false" disabled><p class="fine-print">Up to 120 characters. Never included in the share link or download.</p></div></div>
-        <div class="notice warning one-time-warning"><p>One-time download: starting a transfer destroys the server copy, even if it fails or is cancelled. Large downloads require browser streaming support; without it, ZIP archives are limited to 128 MiB. Recipients must keep the download tab open.</p></div>
+        <div class="upload-options">
+          <div><label for="ttl">Expires after</label><select id="ttl" aria-describedby="expiry-help"><option value="3600">1 hour</option><option value="86400" selected>24 hours</option><option value="259200">3 days</option><option value="604800">7 days</option><option value="2592000">30 days</option><option value="custom">Custom duration</option></select><p id="expiry-help" class="fine-print">Includes upload time.</p></div>
+          <div><label for="package-name">Package name (optional)</label><input id="package-name" type="text" autocomplete="off" spellcheck="false" aria-describedby="name-help" disabled><p id="name-help" class="fine-print">Admin only · Up to 120 characters.</p></div>
+          <div id="custom-ttl-field" hidden><label for="custom-ttl">Minutes (1–43,200)</label><input id="custom-ttl" type="number" min="1" max="43200" step="1" value="60"></div>
+        </div>
         <button id="upload-button" class="button primary full-width" type="button" disabled>Encrypt and create link</button>
         <div id="upload-progress" class="progress-area" hidden><div class="progress-copy"><span id="upload-stage">Preparing…</span><span id="upload-percent">0%</span></div><progress id="upload-meter" value="0" max="100" aria-label="Upload progress"></progress><button id="abort-upload" class="text-button danger" type="button">Cancel and delete upload</button></div>
         <p id="upload-status" class="status-message" role="status" aria-live="polite"></p>

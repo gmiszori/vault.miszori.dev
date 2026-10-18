@@ -4,7 +4,7 @@ Private, client-encrypted, one-time file packages. Both pages use a minimal blac
 
 ## What it does
 
-- A **VPN-only admin page** creates packages from files or folders, sets an expiry, and displays download audit records.
+- A **VPN-only admin page** creates packages from files or folders, sets an expiry, and displays download audit records. Its compact upload panel places expiry and optional private name side by side on desktop and stacks them on mobile. Destructive-download warnings remain on the recipient page, not the upload panel.
 - The public page displays a destructive-download warning. **Opening a link does not consume it**; clicking **Download and destroy** does. This avoids previews and link scanners accidentally destroying packages.
 - A package can be claimed exactly once, including during concurrent requests. The server deletes its ciphertext during/after the attempt, even if the download fails. There is no retry or recovery.
 - Unclaimed packages expire after 1 minute–30 days. The cleanup job runs every 15 seconds; expired packages are immediately unavailable even before cleanup runs.
@@ -13,7 +13,7 @@ Private, client-encrypted, one-time file packages. Both pages use a minimal blac
 
 ## Network design
 
-The admin interface is **not publicly reachable**, even with a correct password.
+The admin interface is **not publicly reachable**, even with a correct password. Public TCP 80/443 listeners serve only the configured `DOMAIN`; requests with an IP or unknown hostname are aborted without an HTTP response (HTTPS may instead fail during TLS negotiation). This is host-based routing, not an authentication boundary: clients can explicitly send the configured hostname. VPN access at `https://10.0.0.1/admin` remains available.
 
 | Listener on the host | Purpose |
 | --- | --- |
