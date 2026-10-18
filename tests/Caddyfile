@@ -66,7 +66,7 @@
 		templates
 		file_server
 	}
-	@assets path /styles.css /public.js /crypto.js /zip.js /download.js /download-worker.js /share-preview.png /share-icon.png /favicon.svg
+	@assets path /styles.css /public.js /crypto.js /zip.js /download.js /download-worker.js /share-preview.png /favicon.svg
 	handle @assets {
 		file_server
 	}
@@ -105,7 +105,7 @@
 		templates
 		file_server
 	}
-	@assets path /styles.css /admin.js /public.js /crypto.js /zip.js /names.js /auth.js /download.js /download-worker.js /share-preview.png /share-icon.png /favicon.svg
+	@assets path /styles.css /admin.js /public.js /crypto.js /zip.js /names.js /auth.js /download.js /download-worker.js /share-preview.png /favicon.svg
 	handle @assets {
 		file_server
 	}

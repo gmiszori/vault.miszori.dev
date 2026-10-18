@@ -113,7 +113,7 @@ Browser and device details are inferred **only when a package is explicitly clai
 
 ### Messaging previews
 
-Public package HTML advertises exactly one Open Graph image and the same Twitter `summary_large_image`: the original 1200×630 banner (`share-preview.png`). It includes the vault title and “Encrypted file and secret sharing system.” The separate 1024×1024 (1:1) `share-icon.png` is kept only as an Apple touch icon, not a secondary messaging image; the favicon is unchanged. Its blue vault mark sits on black with generous margins and no embedded text. The icon is generated at double resolution and downsampled for smooth edges. Description fields remain empty. Advertising only the banner avoids Discord's multi-image preview layout. Messaging apps may still crop or cache previews; existing Discord messages may require reposting after deployment to pick up the corrected metadata. Versioned image URLs help newly fetched cards refresh. Cards never include names, filenames, keys, package contents, recipient audit details, or even package-specific availability. Preview bots fetch only public HTML/image; those requests cannot consume the package. An explicit recipient download is still required.
+Public package HTML advertises exactly one Open Graph image and the same Twitter `summary_large_image`: the original 1200×630 banner (`share-preview.png`). It includes the vault title and “Encrypted file and secret sharing system.” The square sharing/touch image and its Apple touch-icon link have been removed entirely; its old asset URL returns 404 on both listeners. The normal browser-tab SVG favicon is unchanged. Description fields remain empty. Advertising only the banner avoids Discord's multi-image preview layout. Messaging apps may still crop or cache previews; existing Discord messages may require reposting after deployment to pick up the corrected metadata. Versioned image URLs help newly fetched cards refresh. Cards never include names, filenames, keys, package contents, recipient audit details, or even package-specific availability. Preview bots fetch only public HTML/image; those requests cannot consume the package. An explicit recipient download is still required.
 
 No canonical or `og:url` replacement is emitted, so clients can retain the **original fragment-bearing link** rather than replacing it with a URL missing the decryption key. Actual preview rendering/caching depends on the messaging app; some apps disable previews or require a new message after changes. Generic artwork may remain in third-party preview caches after package deletion.
 
@@ -218,7 +218,6 @@ Limits must be positive and internally consistent: upload/download limits cannot
 │   ├── download.js       Local worker-stream readiness and bounded sink
 │   ├── download-worker.js Single-use synthetic ZIP download responses
 │   ├── share-preview.png Original wide messaging banner
-│   ├── share-icon.png    Separate square messaging/touch icon
 │   └── *.test.mjs        Browser-module protocol/archive/name/UI tests
 ├── tools/
 │   └── generate-preview.py  Optional development-only PNG generator
