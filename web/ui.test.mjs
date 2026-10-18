@@ -807,6 +807,17 @@ test('production and test roots consistently redirect to the personal site', asy
   }
 });
 
+test('VPN admin uses a local IP certificate and redirects to the IP without changing the public origin', async () => {
+  const config = await readFile(new URL('../Caddyfile', import.meta.url), 'utf8');
+  const compose = await readFile(new URL('../compose.yaml', import.meta.url), 'utf8');
+  assert.match(config, /default_sni \{\$VPN_BIND_IP:10\.0\.0\.1\}/);
+  assert.match(config, /https:\/\/\{\$VPN_BIND_IP:10\.0\.0\.1\}:8443 \{\s*tls internal/);
+  assert.match(config, /redir https:\/\/\{\$VPN_BIND_IP:10\.0\.0\.1\}\{uri\} 308/);
+  assert.doesNotMatch(config, /https:\/\/\{\$DOMAIN\}:8443/);
+  assert.match(compose, /VPN_BIND_IP: \$\{VPN_BIND_IP:-10\.0\.0\.1\}/);
+  assert.match(compose, /PUBLIC_ORIGIN: https:\/\/\$\{DOMAIN:-drive\.miszori\.dev\}/);
+});
+
 test('HTML entrypoints reference only the agreed self-hosted assets and contain no inline scripts or styles', async () => {
   for (const name of ['index', 'admin']) {
     const html = await readFile(new URL(`./${name}.html`, import.meta.url), 'utf8');

@@ -38,6 +38,7 @@ services:
     restart: unless-stopped
     environment:
       DOMAIN: ${DOMAIN:-drive.miszori.dev}
+      VPN_BIND_IP: ${VPN_BIND_IP:-10.0.0.1}
       PUBLIC_ORIGIN: https://${DOMAIN:-drive.miszori.dev}
       ACME_EMAIL: ${ACME_EMAIL:?Set ACME_EMAIL in .env}
     ports:

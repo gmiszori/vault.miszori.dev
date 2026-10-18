@@ -22,9 +22,11 @@ The admin interface is **not publicly reachable**, even with a correct password.
 | VPN interface `10.0.0.1`, TCP 443 | Admin login, upload interface, audit API |
 | Go API | Private Docker network only; no host port |
 
-For admin devices, private DNS or a hosts entry maps **the same domain** to `10.0.0.1`. The VPN TLS listener uses the same publicly trusted certificate as the public listener. The public listener explicitly returns 404 for admin pages, assets, and API paths. The VPN listener also serves package downloads, so generated links work while connected to the VPN. Caddy internally uses port 8443 for VPN HTTPS; users still use ordinary HTTPS port 443.
+Connect to the VPN and open **https://10.0.0.1/admin**. No DNS or hosts-file changes are needed. Caddy issues and renews a certificate for `VPN_BIND_IP` using its internal certificate authority (`tls internal`); public CAs cannot issue certificates for this private IP. The public domain retains its publicly trusted certificate and explicitly returns 404 for admin pages, assets, and API paths. Share links still use the public domain. Caddy internally uses port 8443 for VPN HTTPS; users still use ordinary HTTPS port 443.
 
-HTTPS is mandatory: browser WebCrypto does not work on plain HTTP VPN addresses. VPN HTTP redirects to the domain, rather than serving an insecure encryption page. Do not put a CDN or external reverse proxy in front without redesigning the IP/audit and trust boundaries.
+The admin certificate will show a browser trust warning unless you install Caddy's root CA on your device. A browser may allow an explicit exception, but some browsers/policies prohibit bypasses or restrict WebCrypto/Service Workers even afterward. If encryption is unavailable, install the root CA from a trusted source; do not disable the application's secure-context checks. Verify the certificate through a trusted channel before accepting it: bypassing a warning without verification does not authenticate the server. The CA and certificates persist in the existing `caddy_data` volume. Never distribute the CA private key.
+
+HTTPS is mandatory: browser WebCrypto does not work on plain HTTP VPN addresses. VPN HTTP redirects non-root paths to the VPN IP over HTTPS, rather than serving an insecure encryption page. Do not put a CDN or external reverse proxy in front without redesigning the IP/audit and trust boundaries.
 
 ## Deploy
 
@@ -50,19 +52,13 @@ docker compose up --build -d --wait
 docker compose logs --tail=30 api caddy
 ```
 
-Caddy obtains/renews a certificate automatically. Certificate issuance requires public DNS and inbound ACME access. Deployment will fail to bind if the VPN address is not present. The backend network uses `172.30.0.0/24`; ensure it does not overlap existing networks. Only Caddy and the API should join it.
+Caddy obtains/renews the public domain's certificate automatically using public DNS and inbound ACME access. The VPN IP certificate is issued locally by Caddy and needs neither DNS changes nor a Cloudflare API token. Deployment will fail to bind if the VPN address is not present. The backend network uses `172.30.0.0/24`; ensure it does not overlap existing networks. Only Caddy and the API should join it.
 
-5. On each admin device, connect to the VPN and configure split DNS, or add:
-
-```text
-10.0.0.1 drive.miszori.dev
-```
-
-Then visit `https://drive.miszori.dev/admin`. On first use, enter the setup token and choose/confirm a **different strong admin password** (16–1,024 Unicode characters). Username defaults to `admin`. The password is never sent to the server: the browser derives independent authentication and name-encryption keys. Later sign-ins use only that password and automatically unlock package names. The one-time token cannot replace or reset an enrolled password; remove `ADMIN_SETUP_TOKEN` from `.env` after enrollment if desired. Keep the data volume, including `auth.json` and `label-salt`.
+5. On each admin device, connect to WireGuard with a route covering `10.0.0.1`, then visit **https://10.0.0.1/admin**. Verify and accept the local certificate warning if your browser permits it, or install the Caddy root CA as described above. Remove any previous hosts-file override mapping `drive.miszori.dev` to `10.0.0.1`; public package links should use normal public DNS. Existing installations keep their enrolled password and encrypted package names—preserve the Compose project and named volumes; no re-enrollment is needed. On first use, enter the setup token and choose/confirm a **different strong admin password** (16–1,024 Unicode characters). Username defaults to `admin`. The password is never sent to the server: the browser derives independent authentication and name-encryption keys. Later sign-ins use only that password and automatically unlock package names. The one-time token cannot replace or reset an enrolled password; remove `ADMIN_SETUP_TOKEN` from `.env` after enrollment if desired. Keep the data volume, including `auth.json` and `label-salt`.
 
 All sessions and name keys stay in tab memory and are cleared on sign-out/leaving. Private API requests carry a derived authentication value over HTTPS, not the password. This is deliberately a single-admin VPN application, not a public identity/MFA provider. Both public and VPN `/` redirect to **https://gergo.miszori.dev** with HTTP 302; package links and admin routes stay on this site. Use `/admin` explicitly.
 
-6. Verify **from a device outside the VPN** that `/admin`, `/admin/api/packages`, and `/api/admin/packages` return 404. Public recipients must use public DNS, not the admin's private mapping.
+6. Verify **from a device outside the VPN** that `/admin`, `/admin/api/packages`, and `/api/admin/packages` return 404. Public recipients use the public domain; the VPN IP is for administration only.
 
 Do not run the local test stack on a production host with this network already allocated.
 
