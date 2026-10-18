@@ -115,8 +115,8 @@ test('messaging previews are generic, server-rendered, and never claim or audit 
       const response = await fetch(`${origin}/package/${p.id}?private=do-not-reflect-this`, { headers });
       assert.equal(response.status, 200); const html = await response.text();
       assert.match(html, /property="og:title" content="vault\.miszori\.dev"/);
-      assert.match(html, /name="twitter:card" content="summary"/);
-      assert.ok(html.includes(`content='${pub}/share-preview.png?v=6'`));
+      assert.match(html, /name="twitter:card" content="summary_large_image"/);
+      assert.ok(html.includes(`content='${pub}/share-preview.png?v=7'`));
       assert.match(html, /property="og:description" content=""/);
       assert.match(html, /name="twitter:description" content=""/);
       assert.equal(html.includes('Server logs include'), false);
@@ -129,7 +129,12 @@ test('messaging previews are generic, server-rendered, and never claim or audit 
     const png = await fetch(`${pub}/share-preview.png`, { headers }); assert.equal(png.status, 200);
     assert.match(png.headers.get('content-type'), /image\/png/);
     const bytes = Buffer.from(await png.arrayBuffer()); assert.equal(bytes.subarray(1, 4).toString(), 'PNG');
-    assert.equal(bytes.readUInt32BE(16), 1024); assert.equal(bytes.readUInt32BE(20), 1024);
+    assert.equal(bytes.readUInt32BE(16), 1200); assert.equal(bytes.readUInt32BE(20), 630);
+    const icon = await fetch(`${pub}/share-icon.png`, { headers });
+    assert.equal(icon.status, 200);
+    assert.match(icon.headers.get('content-type'), /image\/png/);
+    const iconBytes = Buffer.from(await icon.arrayBuffer());
+    assert.equal(iconBytes.readUInt32BE(16), 1024); assert.equal(iconBytes.readUInt32BE(20), 1024);
     const info = await entry(p.id); assert.equal(info.status, 'ready');
     assert.equal(info.openedAt, undefined); assert.equal(info.openedIp, undefined); assert.equal(info.openedBrowser, undefined);
   } finally { await api(`packages/${p.id}`, 'DELETE'); }
