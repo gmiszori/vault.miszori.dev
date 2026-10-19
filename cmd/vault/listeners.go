@@ -12,16 +12,22 @@ import (
 )
 
 type listenerConfig struct {
-	publicAddr string
-	adminAddr  string
-	adminProxy net.IP
+	publicAddr   string
+	adminAddr    string
+	adminProxy   net.IP
+	trustedProxy *net.IPNet
 }
 
 func listenerConfigFromEnv() (listenerConfig, error) {
+	trustedProxy, err := parseTrustedProxyCIDR(env("TRUSTED_PROXY_CIDR", defaultTrustedProxyCIDR))
+	if err != nil {
+		return listenerConfig{}, err
+	}
 	config := listenerConfig{
-		publicAddr: env("PUBLIC_LISTEN_ADDR", "127.0.0.1:8080"),
-		adminAddr:  env("ADMIN_LISTEN_ADDR", "127.0.0.1:8081"),
-		adminProxy: net.ParseIP(env("ADMIN_PROXY_IP", "127.0.0.1")),
+		publicAddr:   env("PUBLIC_LISTEN_ADDR", "127.0.0.1:8080"),
+		adminAddr:    env("ADMIN_LISTEN_ADDR", "127.0.0.1:8081"),
+		adminProxy:   net.ParseIP(env("ADMIN_PROXY_IP", "127.0.0.1")),
+		trustedProxy: trustedProxy,
 	}
 	for _, addr := range []string{config.publicAddr, config.adminAddr} {
 		host, port, err := net.SplitHostPort(addr)
@@ -39,6 +45,7 @@ func listenerConfigFromEnv() (listenerConfig, error) {
 func (s *Server) publicHandler() http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/api/admin" || strings.HasPrefix(r.URL.Path, "/api/admin/") {
+			defer guardRequestBody(w, r)()
 			fail(w, http.StatusNotFound, "Not found")
 			return
 		}
@@ -51,6 +58,7 @@ func (s *Server) adminHandler(proxy net.IP) http.Handler {
 		host, _, err := net.SplitHostPort(r.RemoteAddr)
 		// Use the socket peer, never client-controlled forwarding headers.
 		if r.URL.Path != "/healthz" && (err != nil || !proxy.Equal(net.ParseIP(host))) {
+			defer guardRequestBody(w, r)()
 			fail(w, http.StatusNotFound, "Not found")
 			return
 		}

@@ -4,6 +4,10 @@ import vm from 'node:vm';
 import { readFile } from 'node:fs/promises';
 import { MessageChannel } from 'node:worker_threads';
 import { webcrypto } from 'node:crypto';
+import { CHUNK_SIZE, MEMORY_LIMIT, decodeKey, encodeKey, importKey, encryptChunk, decryptChunk, parseManifest, FramedReader, formatBytes, deriveClaimToken, serializeManifest } from './crypto.js';
+import { ZipWriter, archiveSize } from './zip.js';
+
+const flushMessages = () => new Promise(resolve => setImmediate(() => setImmediate(resolve)));
 
 const workerSource = await readFile(new URL('./download-worker.js', import.meta.url), 'utf8');
 const clientSource = await readFile(new URL('./download.js', import.meta.url), 'utf8');
@@ -14,6 +18,20 @@ const nonce = 'b'.repeat(64);
 function harness() {
   const listeners = new Map();
   const timers = new Set();
+  const deadlines = new Map();
+  let now = 0;
+  function advance(milliseconds) {
+    const target = now + milliseconds;
+    while (deadlines.size) {
+      const [callback, deadline] = [...deadlines].sort((a, b) => a[1] - b[1])[0];
+      if (deadline > target) break;
+      now = deadline;
+      deadlines.delete(callback);
+      timers.delete(callback);
+      callback();
+    }
+    now = target;
+  }
   const owners = new Map([['owner', { id: 'owner', type: 'window', url: `${origin}/package/example` }]]);
   let claims = 0;
   const self = {
@@ -23,8 +41,8 @@ function harness() {
   };
   vm.runInNewContext(workerSource, {
     self, URL, Response, ReadableStream, Uint8Array, Number, Error,
-    setTimeout: callback => { timers.add(callback); return callback; },
-    clearTimeout: callback => timers.delete(callback)
+    setTimeout: (callback, milliseconds) => { timers.add(callback); deadlines.set(callback, now + milliseconds); return callback; },
+    clearTimeout: callback => { timers.delete(callback); deadlines.delete(callback); }
   });
   const fetchRoute = (path = `/local-download/${token}`, options = {}) => {
     let result;
@@ -47,7 +65,7 @@ function harness() {
       port: port1
     };
   }
-  return { self, listeners, owners, timers, fetchRoute, prepare, claims: () => claims };
+  return { self, listeners, owners, timers, fetchRoute, prepare, advance, now: () => now, claims: () => claims };
 }
 
 async function initialized(h, size = 3) {
@@ -166,6 +184,157 @@ test('stream cannot start before known size and rejects short completion', async
   assert.equal((await port.next()).type, 'error');
   await assert.rejects(response.body.getReader().read());
   port.close();
+});
+
+test('ciphertext progress renews only the authenticated session and stalled reads still expire', async () => {
+  const h = harness();
+  const port = await initialized(h);
+  const response = await h.fetchRoute();
+  await port.next();
+  await port.next();
+  try {
+    h.advance(90000);
+    port.send('progress', { bytes: 65536 });
+    await flushMessages();
+    h.advance(119999);
+    assert.equal(h.timers.size, 1, 'actual encrypted reads renew the finite idle deadline');
+    port.send('progress', { bytes: 65536, nonce: 'wrong' });
+    await flushMessages();
+    h.advance(1);
+    assert.match((await port.next()).message, /timed out/);
+    await assert.rejects(response.body.getReader().read(), /timed out/);
+    assert.equal(h.timers.size, 0);
+  } finally { port.close(); }
+});
+
+test('ciphertext progress never grants plaintext write credit through downstream backpressure', async () => {
+  const h = harness();
+  const port = await initialized(h, 2);
+  const response = await h.fetchRoute();
+  await port.next();
+  await port.next();
+  try {
+    port.send('chunk', { bytes: new Uint8Array([1]) });
+    assert.equal((await port.next()).type, 'ack');
+    port.send('progress', { bytes: 65536 });
+    port.send('chunk', { bytes: new Uint8Array([2]) });
+    assert.match((await port.next()).message, /protocol/);
+    await assert.rejects(response.body.getReader().read(), /protocol/);
+    assert.equal(h.timers.size, 0);
+  } finally { port.close(); }
+});
+
+test('ciphertext progress rejects empty or invalid activity and cannot exceed the finite package budget', async () => {
+  for (const bytes of [0, -1, 0.5, NaN, CHUNK_SIZE + 17]) {
+    const h = harness();
+    const port = await initialized(h);
+    try {
+      port.send('progress', { bytes });
+      assert.match((await port.next()).message, /protocol/);
+      assert.equal(h.timers.size, 0);
+    } finally { port.close(); }
+  }
+  const h = harness();
+  const port = await initialized(h);
+  try {
+    const limit = 20 * 1024 ** 3 + CHUNK_SIZE + 30000 * 20;
+    const chunk = CHUNK_SIZE + 16;
+    for (let i = 0; i < Math.floor(limit / chunk); i++) port.send('progress', { bytes: chunk });
+    port.send('progress', { bytes: limit % chunk });
+    await flushMessages();
+    assert.equal(h.timers.size, 1);
+    port.send('progress', { bytes: 1 });
+    assert.match((await port.next()).message, /protocol/);
+    assert.equal(h.timers.size, 0);
+  } finally { port.close(); }
+});
+
+test('progressive 64 KiB/s ciphertext keeps an 8 MiB record alive beyond 120 seconds and saves the ZIP', async () => {
+  const h = harness();
+  const raw = new Uint8Array(32).fill(19);
+  const key = await importKey(raw);
+  const files = [{ path: 'slow.bin', size: CHUNK_SIZE, lastModified: 0 }];
+  const contents = new Uint8Array(CHUNK_SIZE).fill(41);
+  const { plaintext } = serializeManifest(files);
+  const records = await Promise.all([plaintext, contents].map((bytes, index) => encryptChunk(key, 'pkg-123', index, bytes)));
+  const body = Buffer.concat(records.flatMap(record => {
+    const header = Buffer.alloc(4);
+    header.writeUInt32BE(record.length);
+    return [header, record];
+  }));
+  const saved = [];
+  let background;
+  let streamError;
+  let claims = 0;
+  let offset = 0;
+  const elements = new Map();
+  const element = id => {
+    if (!elements.has(id)) elements.set(id, {
+      hidden: false, disabled: false, checked: false, textContent: '',
+      classList: { toggle() {} }, addEventListener() {}
+    });
+    return elements.get(id);
+  };
+  const worker = {
+    scriptURL: `${origin}/download-worker.js`,
+    postMessage(data, ports) { h.listeners.get('message')({ data, ports, source: { id: 'owner' }, waitUntil() {} }); }
+  };
+  const location = { origin, pathname: '/package/pkg-123', search: '', hash: `#${encodeKey(raw)}` };
+  const context = vm.createContext({
+    CHUNK_SIZE, MEMORY_LIMIT, decodeKey, importKey, decryptChunk, parseManifest, FramedReader,
+    formatBytes, deriveClaimToken, ZipWriter, archiveSize,
+    window: { isSecureContext: true, addEventListener() {}, removeEventListener() {} },
+    navigator: { serviceWorker: { controller: worker, register: async () => ({ active: worker }) } },
+    document: {
+      getElementById: element,
+      createElement: () => ({ remove() {} }),
+      body: { append(frame) {
+        background = (async () => {
+          const response = await h.fetchRoute(frame.src, { clientId: 'iframe' });
+          assert.equal(response.headers.get('Content-Length'), String(archiveSize(files)));
+          const reader = response.body.getReader();
+          while (true) {
+            const { value, done } = await reader.read();
+            if (done) break;
+            saved.push(Buffer.from(value));
+          }
+        })().catch(error => { streamError = error; });
+      } }
+    },
+    location, history: { replaceState() { location.hash = ''; } },
+    crypto: webcrypto, MessageChannel, ReadableStream, Uint8Array, URL, DOMException, AbortController, TextDecoder,
+    setTimeout, clearTimeout,
+    fetch: async (path, options) => {
+      if (path.startsWith('/local-download/')) return h.fetchRoute(path, { request: { mode: 'cors' } });
+      if (options.method !== 'POST') return Response.json({ status: 'ready', expiresAt: '2099-01-01T00:00:00Z' });
+      claims++;
+      return new Response(new ReadableStream({ async pull(controller) {
+        if (offset === body.length) { controller.close(); return; }
+        await flushMessages();
+        h.advance(1000);
+        const next = Math.min(offset + 65536, body.length);
+        controller.enqueue(body.subarray(offset, next));
+        offset = next;
+      } }, { highWaterMark: 0 }));
+    }
+  });
+  vm.runInContext(clientSource.replace('export async function', 'async function'), context);
+  const publicSource = await readFile(new URL('./public.js', import.meta.url), 'utf8');
+  vm.runInContext(publicSource.replace(/^import .*;\n/gm, ''), context);
+  for (let i = 0; i < 100 && element('package-state').textContent !== 'Ready'; i++) await flushMessages();
+  assert.equal(element('package-state').textContent, 'Ready');
+  element('download-consent').checked = true;
+  await context.download();
+  await background;
+  assert.ok(h.now() > 120000, 'one encrypted record alone takes over two minutes');
+  assert.equal(element('package-state').textContent, 'Downloaded');
+  assert.equal(streamError, undefined);
+  assert.equal(claims, 1);
+  const archive = Buffer.concat(saved);
+  assert.equal(archive.length, archiveSize(files));
+  const dataOffset = 30 + archive.readUInt16LE(26);
+  assert.deepEqual(archive.subarray(dataOffset, dataOffset + CHUNK_SIZE), Buffer.from(contents));
+  assert.equal(h.timers.size, 0);
 });
 
 test('unsupported browser feature detection preserves bounded Blob fallback', async () => {

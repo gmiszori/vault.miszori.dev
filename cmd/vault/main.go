@@ -46,6 +46,7 @@ type Package struct {
 	OpenedBrowser  *BrowserProfile `json:"openedBrowser,omitempty"`
 	activeReads    int
 	auditBroken    bool
+	cleanupPending bool
 }
 type diskPackage struct {
 	Package
@@ -66,6 +67,7 @@ type Server struct {
 	now                func() time.Time
 	labelKey           LabelKey
 	gate               *requestGate
+	trustedProxy       *net.IPNet
 }
 
 func randomID() string {
@@ -115,6 +117,8 @@ func (s *Server) save(p *Package) error {
 	return d.Sync()
 }
 func (s *Server) purge(p *Package, status string) error {
+	// Keep failed/deferred cleanup retryable and quota-held until every ciphertext record is removed.
+	p.cleanupPending = true
 	// Make revocation durable before cleanup; reusable streams already admitted may finish.
 	p.Status = status
 	p.TokenHash = ""
@@ -135,13 +139,15 @@ func (s *Server) purge(p *Package, status string) error {
 			}
 		}
 	}
+	p.cleanupPending = false
 	return nil
 }
 func newServer(root, user, setupToken, origin string, quota int64) (*Server, error) {
 	if user == "" {
 		user = "admin"
 	}
-	s := &Server{root: root, user: user, origin: origin, quota: quota, packages: map[string]*Package{}, limits: map[string]bucket{}, now: time.Now, gate: newRequestGate(defaultGateLimits())}
+	_, trustedProxy, _ := net.ParseCIDR(defaultTrustedProxyCIDR)
+	s := &Server{root: root, user: user, origin: origin, quota: quota, packages: map[string]*Package{}, limits: map[string]bucket{}, now: time.Now, gate: newRequestGate(defaultGateLimits()), trustedProxy: trustedProxy}
 	if err := os.MkdirAll(root, 0700); err != nil {
 		return nil, err
 	}
@@ -212,6 +218,11 @@ func (s *Server) sweep() error {
 				return err
 			}
 		}
+		if p.activeReads == 0 && p.Status != "ready" && p.Status != "uploading" && p.Status != "consuming" && p.cleanupPending {
+			if err := s.purge(p, p.Status); err != nil {
+				return err
+			}
+		}
 		if p.activeReads == 0 && p.Status != "ready" && p.Status != "uploading" && p.Status != "consuming" && now.Sub(p.ExpiresAt) > 90*24*time.Hour {
 			if err := os.RemoveAll(s.dir(id)); err != nil {
 				return err
@@ -243,18 +254,6 @@ func decode(w http.ResponseWriter, r *http.Request, v any) bool {
 	}
 	return true
 }
-func peerIP(r *http.Request) string {
-	// Only the isolated Caddy network can supply this header. No backend port is published.
-	host, _, _ := net.SplitHostPort(r.RemoteAddr)
-	ip := net.ParseIP(host)
-	_, trusted, _ := net.ParseCIDR("172.30.0.0/24")
-	if trusted.Contains(ip) {
-		if real := net.ParseIP(r.Header.Get("X-Real-IP")); real != nil {
-			return real.String()
-		}
-	}
-	return host
-}
 func (s *Server) allowed(key string, n int) bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -277,15 +276,20 @@ func (s *Server) allowed(key string, n int) bool {
 	s.limits[key] = b
 	return b.count <= n
 }
-func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	if r.ContentLength != 0 {
-		// Error responses must not leave an unread body draining on an unbounded keep-alive socket.
-		r.Close = true
-		w.Header().Set("Connection", "close")
-		controller := http.NewResponseController(w)
-		_ = controller.SetReadDeadline(time.Now().Add(2 * time.Minute))
-		defer controller.SetReadDeadline(time.Time{})
+func guardRequestBody(w http.ResponseWriter, r *http.Request) func() {
+	if r.ContentLength == 0 && len(r.TransferEncoding) == 0 {
+		return func() {}
 	}
+	// Error responses must not leave an unread body draining on an unbounded keep-alive socket.
+	r.Close = true
+	w.Header().Set("Connection", "close")
+	controller := http.NewResponseController(w)
+	_ = controller.SetReadDeadline(time.Now().Add(2 * time.Minute))
+	// net/http closes (and may drain) the original body after the handler returns.
+	return func() { _ = controller.SetReadDeadline(time.Now()) }
+}
+func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	defer guardRequestBody(w, r)()
 	w.Header().Set("Cache-Control", "no-store")
 	w.Header().Set("X-Content-Type-Options", "nosniff")
 	w.Header().Set("Referrer-Policy", "no-referrer")
@@ -307,7 +311,7 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		if r.URL.Path == "/api/admin/auth" && r.Method == http.MethodGet {
-			if !s.allowed("discovery:"+peerIP(r), 20) || !s.gate.allowAdminDiscovery(s.now()) {
+			if !s.allowed("discovery:"+s.peerIP(r), 20) || !s.gate.allowAdminDiscovery(s.now()) {
 				fail(w, 429, "Too many requests")
 				return
 			}
@@ -335,7 +339,7 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		s.admin(w, r)
 		return
 	}
-	if !s.allowed("public:"+peerIP(r), 120) || !s.gate.allowPublic(s.now()) {
+	if !s.allowed("public:"+s.peerIP(r), 120) || !s.gate.allowPublic(s.now()) {
 		fail(w, 429, "Too many requests")
 		return
 	}
@@ -375,7 +379,7 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 func (s *Server) storageUsedLocked() int64 {
 	var used int64
 	for _, p := range s.packages {
-		if p.Status == "ready" || p.Status == "uploading" || p.Status == "consuming" || p.activeReads > 0 {
+		if p.Status == "ready" || p.Status == "uploading" || p.Status == "consuming" || p.activeReads > 0 || p.cleanupPending {
 			used += p.Bytes
 		}
 	}
@@ -593,7 +597,7 @@ func (s *Server) consume(w http.ResponseWriter, r *http.Request, id string) {
 		fail(w, 404, "Package already viewed or does not exist")
 		return
 	}
-	retrieval := Retrieval{OpenedAt: s.now(), OpenedIP: peerIP(r), OpenedBrowser: browserProfile(r)}
+	retrieval := Retrieval{OpenedAt: s.now(), OpenedIP: s.peerIP(r), OpenedBrowser: browserProfile(r)}
 	if err := s.appendRetrieval(p, retrieval); err != nil {
 		s.mu.Unlock()
 		fail(w, 500, "Storage unavailable")
@@ -606,7 +610,9 @@ func (s *Server) consume(w http.ResponseWriter, r *http.Request, id string) {
 	p.OpenedIP = retrieval.OpenedIP
 	p.OpenedBrowser = retrieval.OpenedBrowser
 	if err := s.save(p); err != nil {
-		_ = s.purge(p, "failed")
+		if p.OneTime {
+			_ = s.purge(p, "failed")
+		}
 		s.mu.Unlock()
 		fail(w, 500, "Storage unavailable")
 		return
@@ -628,7 +634,7 @@ func (s *Server) consume(w http.ResponseWriter, r *http.Request, id string) {
 		}
 		if oneTime || (p.activeReads == 0 && status != "ready") {
 			if err := s.purge(p, status); err != nil {
-				log.Print("ERROR: ciphertext cleanup failed; manual intervention required")
+				log.Print("ERROR: ciphertext cleanup failed; sweep will retry")
 			}
 		}
 	}()
@@ -703,6 +709,7 @@ func main() {
 		log.Fatal("Cannot initialize storage: ", err)
 	}
 	s.gate = newRequestGate(limits)
+	s.trustedProxy = config.trustedProxy
 	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer cancel()
 	go func() {

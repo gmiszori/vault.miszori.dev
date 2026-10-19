@@ -1,7 +1,7 @@
 {
 	admin off
 	auto_https disable_redirects
-	default_sni {$VPN_BIND_IP:10.0.0.1}
+	default_sni {$VPN_BIND_IP:10.13.13.1}
 	log {
 		format filter {
 			wrap json
@@ -25,16 +25,18 @@
 
 import /etc/caddy/common.caddy
 
-:8081 {
+:80 {
+	bind {$VPN_BIND_IP:10.13.13.1}
 	handle / {
 		redir https://gergo.miszori.dev 302
 	}
 	handle {
-		redir https://{$VPN_BIND_IP:10.0.0.1}{uri} 308
+		redir https://{$VPN_BIND_IP:10.13.13.1}{uri} 308
 	}
 }
 
-https://{$VPN_BIND_IP:10.0.0.1}:8443 {
+https://{$VPN_BIND_IP:10.13.13.1} {
+	bind {$VPN_BIND_IP:10.13.13.1}
 	tls internal
 	import common_headers
 	root * /srv

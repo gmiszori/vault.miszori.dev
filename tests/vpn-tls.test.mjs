@@ -42,7 +42,7 @@ function plainRequest(port, path, host) {
 test('production VPN IP serves admin while public listeners abort IP and unknown-host requests', { timeout: 90000 }, async () => {
   const compose = await readFile(join(root, 'compose.yaml'), 'utf8');
   const image = /image: (caddy:[^\s]+)/.exec(compose)[1];
-  const { services } = JSON.parse(execFileSync('docker', [
+  const { services, networks } = JSON.parse(execFileSync('docker', [
     'compose', '--env-file', '/dev/null', '-f', join(root, 'compose.yaml'), 'config', '--format', 'json',
   ], {
     encoding: 'utf8', timeout: 60000,
@@ -52,10 +52,11 @@ test('production VPN IP serves admin while public listeners abort IP and unknown
   const name = `vault-vpn-tls-${process.pid}`;
   const vpnName = `${name}-private`;
   const started = [];
+  const testNetworks = new Map();
   try {
     for (const [container, config, expectedPorts] of [
       [name, 'Caddyfile', [80, 443]],
-      [vpnName, 'Caddyfile.vpn', [8081, 8443]],
+      [vpnName, 'Caddyfile.vpn', [80, 443]],
     ]) {
       const adapted = JSON.parse(docker('run', '--rm',
         '-e', 'DOMAIN=vault.example', '-e', 'VPN_BIND_IP=10.0.0.1',
@@ -64,7 +65,13 @@ test('production VPN IP serves admin while public listeners abort IP and unknown
         '-v', `${join(root, 'Caddyfile.common')}:/etc/caddy/common.caddy:ro`,
         image, 'caddy', 'adapt', '--config', '/etc/caddy/Caddyfile', '--adapter', 'caddyfile'));
       const listeners = Object.values(adapted.apps.http.servers).flatMap(server => server.listen).sort();
-      assert.deepEqual(listeners, expectedPorts.map(port => `:${port}`).sort());
+      assert.deepEqual(listeners, expectedPorts.map(port => `${container === vpnName ? '10.0.0.1' : ''}:${port}`).sort());
+      if (container === vpnName) {
+        // TLS/routing fixture only; wireguard.test.mjs exercises the unmodified tunnel-IP bindings.
+        for (const server of Object.values(adapted.apps.http.servers)) {
+          server.listen = server.listen.map(address => `:${address.split(':').at(-1)}`);
+        }
+      }
       const policies = adapted.apps.tls.automation.policies;
       if (container === vpnName) {
         const vpnPolicy = policies.find(policy => policy.subjects?.includes('10.0.0.1'));
@@ -82,7 +89,16 @@ test('production VPN IP serves admin while public listeners abort IP and unknown
       assert.equal(service.read_only, true);
       assert.deepEqual(service.cap_drop, ['ALL']);
       assert.ok(service.security_opt.includes('no-new-privileges:true'));
+      const networkOwner = container === vpnName ? services.wireguard : service;
+      for (const network of Object.keys(networkOwner.networks)) {
+        if (!testNetworks.has(network)) {
+          const networkName = `${name}-${network}`;
+          docker('network', 'create', ...(networks[network].internal ? ['--internal'] : []), networkName);
+          testNetworks.set(network, networkName);
+        }
+      }
       docker('run', '-d', '--name', container,
+        ...Object.keys(networkOwner.networks).flatMap(network => ['--network', testNetworks.get(network)]),
         '--read-only', '-v', '/data', '-v', '/config',
         ...service.tmpfs.flatMap(mount => ['--tmpfs', mount]),
         ...service.cap_drop.flatMap(capability => ['--cap-drop', capability]),
@@ -99,10 +115,15 @@ test('production VPN IP serves admin while public listeners abort IP and unknown
     }
     const ports = JSON.parse(docker('inspect', '--format', '{{json .NetworkSettings.Ports}}', name));
     const vpnPorts = JSON.parse(docker('inspect', '--format', '{{json .NetworkSettings.Ports}}', vpnName));
+    for (const [bindings, expectedPorts] of [[ports, [80, 443]], [vpnPorts, [80, 443]]]) {
+      for (const port of expectedPorts) {
+        assert.ok(bindings[`${port}/tcp`]?.length, `host port binding for ${port}/tcp is missing`);
+      }
+    }
     const publicPlainPort = Number(ports['80/tcp'][0].HostPort);
     const publicPort = Number(ports['443/tcp'][0].HostPort);
-    const vpnPort = Number(vpnPorts['8443/tcp'][0].HostPort);
-    const httpPort = Number(vpnPorts['8081/tcp'][0].HostPort);
+    const vpnPort = Number(vpnPorts['443/tcp'][0].HostPort);
+    const httpPort = Number(vpnPorts['80/tcp'][0].HostPort);
     let ca;
     let vpnCA;
     let admin;
@@ -153,6 +174,7 @@ test('production VPN IP serves admin while public listeners abort IP and unknown
     await assert.rejects(request(publicPort, '/admin', '10.0.0.1', ca, false), error => ['ECONNRESET', 'EPROTO'].includes(error.code));
   } finally {
     for (const container of started.reverse()) docker('rm', '-f', '-v', container);
+    for (const network of [...testNetworks.values()].reverse()) docker('network', 'rm', network);
     await rm(dir, { recursive: true, force: true });
   }
 });

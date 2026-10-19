@@ -88,7 +88,10 @@ async function download() {
   let frames;
   let boundedFallback = false;
   let localStream = false;
-  controller = new AbortController();
+  const attempt = initialization;
+  const activeController = new AbortController();
+  controller = activeController;
+  const signal = activeController.signal;
   $('download-meter').classList.toggle('is-complete', false);
   $('download-meter').value = 0;
   $('download-percent').textContent = '0%';
@@ -103,7 +106,7 @@ async function download() {
     if (destination) sink = await destination.createWritable();
     else {
       if (!blobFallbackOffered) {
-        sink = await prepareServiceWorkerDownload({ signal: controller.signal, onFailure: error => controller.abort(error) });
+        sink = await prepareServiceWorkerDownload({ signal, onFailure: error => activeController.abort(error) });
         if (!sink) {
           blobFallbackOffered = true;
           $('fallback-warning').hidden = false;
@@ -118,11 +121,11 @@ async function download() {
         boundedFallback = true;
       }
     }
+    signal.throwIfAborted();
     $('fallback-warning').hidden = !boundedFallback;
-    controller.signal.throwIfAborted();
     const key = await importKey(keyBytes);
     const claimToken = await deriveClaimToken(keyBytes, id);
-    controller.signal.throwIfAborted();
+    signal.throwIfAborted();
     $('download-progress').hidden = false;
     $('cancel-download').hidden = false;
     $('download-stage').textContent = 'Claiming encrypted package…';
@@ -131,14 +134,16 @@ async function download() {
     available = false;
     packageState('Downloading');
     const response = await fetch(`/api/packages/${encodeURIComponent(id)}/consume`, {
-      method: 'POST', headers: { 'X-Claim-Token': claimToken }, signal: controller.signal, credentials: 'omit', cache: 'no-store', referrerPolicy: 'no-referrer'
+      method: 'POST', headers: { 'X-Claim-Token': claimToken }, signal, credentials: 'omit', cache: 'no-store', referrerPolicy: 'no-referrer'
     });
+    if (signal.aborted) { await response.body?.cancel(); signal.throwIfAborted(); }
     if (response.status === 429) {
       consumed = false;
       available = Boolean(keyBytes);
-      controller.abort();
+      activeController.abort();
       try { await response.body?.cancel(); } catch { /* The rejection body may already be closed. */ }
       try { await sink?.abort(); } catch { /* The destination may already be closed. */ }
+      if (attempt !== initialization) return;
       packageState(available ? 'Ready' : 'Unavailable');
       $('download-progress').hidden = true;
       $('download-meter').value = 0;
@@ -154,8 +159,9 @@ async function download() {
         ? 'This package does not exist, or it has already been claimed, deleted, or expired.'
         : 'The server could not start the transfer. Ask the sender to check its status.');
     }
-    frames = new FramedReader(response.body);
+    frames = new FramedReader(response.body, localStream ? bytes => sink.progress(bytes) : undefined);
     const { manifest, bytes, chunks } = parseManifest(await decryptChunk(key, id, 0, await frames.record()));
+    signal.throwIfAborted();
     const size = archiveSize(manifest.files);
     if (boundedFallback && size > MEMORY_LIMIT) {
       throw new Error(oneTime ? 'This archive is larger than the 128 MiB browser limit. No file data was saved. The one-time transfer has already been claimed; ask the sender for a new link and use a browser with supported streaming downloads, such as desktop Chrome or Edge.' : 'This archive exceeds the 128 MiB browser limit. Use a browser with streaming downloads. The package remains available until expiry.');
@@ -167,10 +173,12 @@ async function download() {
     for (const file of manifest.files) {
       await archive.startFile(file);
       for (let offset = 0; offset < file.size; offset += CHUNK_SIZE) {
-        controller.signal.throwIfAborted();
+        signal.throwIfAborted();
         const plaintext = await decryptChunk(key, id, index++, await frames.record());
+        signal.throwIfAborted();
         if (plaintext.length !== Math.min(CHUNK_SIZE, file.size - offset)) throw new Error('Decrypted file size does not match the manifest.');
         await archive.write(plaintext);
+        signal.throwIfAborted();
         received += plaintext.length;
         progress(received, bytes);
       }
@@ -178,8 +186,9 @@ async function download() {
     }
     if (index !== chunks) throw new Error('The package record count is invalid.');
     await frames.end();
-    controller.signal.throwIfAborted();
+    signal.throwIfAborted();
     await archive.close();
+    signal.throwIfAborted();
     progress(bytes, bytes);
     $('download-meter').classList.toggle('is-complete', true);
     $('download-stage').textContent = 'Decrypted & saved';
@@ -203,6 +212,10 @@ async function download() {
       $('download-button').hidden = !available;
     }
   } catch (error) {
+    activeController.abort();
+    await frames?.cancel();
+    try { await sink?.abort(); } catch { /* The destination may already be closed. */ }
+    if (attempt !== initialization) return;
     const aborted = error.name === 'AbortError';
     status(consumed
       ? `${aborted ? 'Transfer cancelled.' : error.message} This transfer cannot be resumed. Ask the sender for a new package.`
@@ -221,13 +234,12 @@ async function download() {
       keyBytes?.fill(0);
       keyBytes = null;
     }
-    controller?.abort();
-    await frames?.cancel();
-    try { await sink?.abort(); } catch { /* The destination may already be closed. */ }
   } finally {
-    busy = false;
-    $('cancel-download').hidden = true;
-    updateButton();
+    if (attempt === initialization) {
+      busy = false;
+      $('cancel-download').hidden = true;
+      updateButton();
+    }
   }
 }
 
@@ -246,8 +258,9 @@ async function viewText() {
   let unavailableResponse = false;
   let frames;
   let plaintext;
-  controller = new AbortController();
-  const signal = controller.signal;
+  const activeController = new AbortController();
+  controller = activeController;
+  const signal = activeController.signal;
   $('cancel-download').hidden = false;
   status('Decrypting secret…');
   try {
@@ -299,14 +312,14 @@ async function viewText() {
     }
     status('Secret decrypted.');
   } catch (error) {
+    activeController.abort();
+    await frames?.cancel();
     if (attempt !== initialization) return;
     clearText();
     available = (!oneTime || !started) && !unavailableResponse && Boolean(keyBytes) && Date.now() < expiresAt;
     packageState(available ? 'Ready' : 'Unavailable');
     status(`${error.name === 'AbortError' ? 'Opening cancelled.' : error.message}${oneTime && started ? ' This one-time package cannot be opened again.' : available ? ' You can try again before expiry.' : ''}`, true);
     if (!available) { keyBytes?.fill(0); keyBytes = null; }
-    controller.abort();
-    await frames?.cancel();
   } finally {
     plaintext?.fill(0);
     if (attempt === initialization) {
@@ -428,6 +441,9 @@ window.addEventListener('pagehide', () => {
   clearText();
   ++initialization;
   controller?.abort();
+  controller = null;
+  busy = false;
+  $('cancel-download').hidden = true;
   keyBytes?.fill(0);
   keyBytes = null;
   available = false;

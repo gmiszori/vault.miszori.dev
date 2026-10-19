@@ -69,11 +69,25 @@ func TestListenerConfig(t *testing.T) {
 		{"ADMIN_LISTEN_ADDR", "127.0.0.1:8080"},
 		{"ADMIN_PROXY_IP", "0.0.0.0"},
 		{"ADMIN_PROXY_IP", "not-an-ip"},
+		{"TRUSTED_PROXY_CIDR", "invalid"},
+		{"TRUSTED_PROXY_CIDR", "0.0.0.0/0"},
+		{"TRUSTED_PROXY_CIDR", "172.30.0.0/23"},
+		{"TRUSTED_PROXY_CIDR", "10.0.0.0/8"},
+		{"TRUSTED_PROXY_CIDR", "192.168.0.0/16"},
+		{"TRUSTED_PROXY_CIDR", "8.8.8.0/24"},
+		{"TRUSTED_PROXY_CIDR", "127.0.0.1/32"},
+		{"TRUSTED_PROXY_CIDR", "100.64.0.0/24"},
+		{"TRUSTED_PROXY_CIDR", "169.254.0.0/24"},
+		{"TRUSTED_PROXY_CIDR", "172.15.255.0/24"},
+		{"TRUSTED_PROXY_CIDR", "172.32.0.0/24"},
+		{"TRUSTED_PROXY_CIDR", "fd00::/120"},
+		{"TRUSTED_PROXY_CIDR", "::ffff:172.30.0.0/120"},
 	} {
 		t.Run(tc.key+tc.value, func(t *testing.T) {
 			t.Setenv("PUBLIC_LISTEN_ADDR", "127.0.0.1:8080")
 			t.Setenv("ADMIN_LISTEN_ADDR", "127.0.0.1:8081")
 			t.Setenv("ADMIN_PROXY_IP", "127.0.0.1")
+			t.Setenv("TRUSTED_PROXY_CIDR", "")
 			t.Setenv(tc.key, tc.value)
 			if _, err := listenerConfigFromEnv(); err == nil {
 				t.Fatal("unsafe listener configuration accepted")

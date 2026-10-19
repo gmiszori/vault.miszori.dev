@@ -30,6 +30,8 @@ jobs:
           govulncheck ./...
       - name: Browser protocol and archive tests
         run: node --test web/*.test.mjs
+      - name: WireGuard configuration and persistence tests
+        run: node --test wireguard/*.test.mjs
       - name: Validate production proxies
         run: |
           for config in Caddyfile Caddyfile.vpn; do

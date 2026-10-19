@@ -41,7 +41,8 @@ func TestRejectedBodyDoesNotHoldAConnectionOpen(t *testing.T) {
 	if _, err = fmt.Fprint(conn, "POST /api/admin/packages HTTP/1.1\r\nHost: localhost\r\nContent-Length: 1024\r\n\r\n"); err != nil {
 		t.Fatal(err)
 	}
-	response, err := http.ReadResponse(bufio.NewReader(conn), nil)
+	reader := bufio.NewReader(conn)
+	response, err := http.ReadResponse(reader, nil)
 	if err != nil {
 		t.Fatal("rejected request waited for its untrusted body", err)
 	}
@@ -51,6 +52,51 @@ func TestRejectedBodyDoesNotHoldAConnectionOpen(t *testing.T) {
 	}
 	if _, err = io.Copy(io.Discard, response.Body); err != nil {
 		t.Fatal(err)
+	}
+	if _, err := reader.ReadByte(); err != io.EOF {
+		t.Fatalf("rejected connection did not close promptly: %v", err)
+	}
+}
+
+func TestListenerRejectionsDoNotDrainWithheldBodies(t *testing.T) {
+	s := testServer(t)
+	for _, tc := range []struct {
+		name    string
+		handler http.Handler
+	}{
+		{"public admin route", s.publicHandler()},
+		{"admin unauthorized peer", s.adminHandler(net.ParseIP("192.0.2.1"))},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			server := httptest.NewServer(tc.handler)
+			defer func() { server.CloseClientConnections(); server.Close() }()
+			conn, err := net.Dial("tcp", server.Listener.Addr().String())
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer conn.Close()
+			if err := conn.SetDeadline(time.Now().Add(time.Second)); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := fmt.Fprint(conn, "POST /api/admin/config HTTP/1.1\r\nHost: localhost\r\nContent-Length: 1024\r\nX-Real-IP: 192.0.2.1\r\n\r\n"); err != nil {
+				t.Fatal(err)
+			}
+			reader := bufio.NewReader(conn)
+			response, err := http.ReadResponse(reader, nil)
+			if err != nil {
+				t.Fatal("listener rejection waited for the withheld body", err)
+			}
+			defer response.Body.Close()
+			if response.StatusCode != http.StatusNotFound || !response.Close {
+				t.Fatalf("unsafe rejection: %s, close=%v", response.Status, response.Close)
+			}
+			if _, err := io.Copy(io.Discard, response.Body); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := reader.ReadByte(); err != io.EOF {
+				t.Fatalf("rejected connection did not close promptly: %v", err)
+			}
+		})
 	}
 }
 

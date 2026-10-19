@@ -1,6 +1,6 @@
 # vault.miszori.dev
 
-Private, client-encrypted file and plain-text packages with one-time or expiry-based access. Both pages use a minimal black interface with blue controls, green Ready states, and red Unavailable/destructive-download warnings. The admin layout is capped at 1,100px and the narrower public shell at 900px, with no branding header; public package cards are centered in the viewport, with scrolling for taller content. Package links initially show only “Checking package availability”, then reveal the ready or unavailable view after validation. Docker runs a small Go API and Caddy; the browser encrypts/decrypts with WebCrypto. No JavaScript frameworks, third-party scripts, analytics, database service, or build step for the web pages.
+Private, client-encrypted file and plain-text packages with one-time or expiry-based access. Both pages use a minimal black interface with blue controls, green Ready states, and red Unavailable/destructive-download warnings. The admin layout is capped at 1,100px and the narrower public shell at 900px, with no branding header; public package cards are centered in the viewport, with scrolling for taller content. Package links initially show only “Checking package availability”, then reveal the ready or unavailable view after validation. Docker runs a small Go API, separate public/private Caddy proxies, and WireGuard; the browser encrypts/decrypts with WebCrypto. No JavaScript frameworks, third-party scripts, analytics, database service, or build step for the web pages.
 
 ## What it does
 
@@ -12,25 +12,59 @@ Private, client-encrypted file and plain-text packages with one-time or expiry-b
 - Up to **20 GiB per package**, 20,000 files, and 100 active packages. Encryption/upload uses 8 MiB records, not whole-file buffers. The default aggregate ciphertext quota is 100 GiB. Admin Transfer activity shows quota-counted ciphertext usage and the configured `MAX_STORAGE_BYTES` limit in decimal GB (1 GB = 1,000,000,000 bytes), refreshed with the package list. Uploading, ready, and in-progress downloads count toward usage; historical consumed/failed/deleted/expired records do not. Downloads retain their quota allocation until cleanup completes. This is not total filesystem usage or free disk space.
 - Recipients download one **`.zip` archive**, preserving folder paths. ZIP64 supports files and archive offsets above 4 GiB. Entries use ZIP's uncompressed (store) method to keep large downloads streaming and avoid wasting CPU on already-compressed files. Use a current ZIP utility for very large archives.
 
-## How the code works
+## How the whole project works
 
-1. [Caddyfile](./Caddyfile) serves public delivery routes; [Caddyfile.vpn](./Caddyfile.vpn) serves VPN-only administration in a separate Caddy container. Both import security headers and API proxy settings from [Caddyfile.common](./Caddyfile.common). [compose.yaml](./compose.yaml) runs the Go API and both proxies with persistent Docker volumes.
-2. [web/admin.js](./web/admin.js) handles login, file/folder or secret selection, expiration, and uploads. [web/crypto.js](./web/crypto.js) generates a random package key and encrypts content in the browser before sending it. The share link keeps the decryption key after `#`, which browsers do not send in HTTP requests.
-3. [cmd/vault/main.go](./cmd/vault/main.go) stores ciphertext and package metadata, checks authorization and expiration, and manages deletion. [retrievals.go](./cmd/vault/retrievals.go) records retrieval start times, IP addresses, and reported browser/device details. The server never receives the package decryption key or plaintext contents.
-4. [web/public.js](./web/public.js) validates the link and waits for the recipient's download/reveal action. It proves possession of the key, receives ciphertext, and decrypts locally. File packages become streaming ZIP downloads; secrets appear in a copyable box. One-time access destroys the stored package; reusable access leaves it available until expiration or admin deletion.
+### Processes and trust boundaries
+
+[compose.yaml](./compose.yaml) runs four services:
+
+1. **`wireguard`** establishes the encrypted, admin-only tunnel. Its UDP listener is the only published VPN port. Each device gets a separate private key and configuration. The tunnel is not a general-purpose router: forwarding to Docker networks, the LAN, Internet, or other peers is blocked.
+2. **`caddy-vpn`** shares WireGuard's network namespace, not its keys or writable files. [Caddyfile.vpn](./Caddyfile.vpn) binds HTTP/HTTPS only to the tunnel IP. No admin TCP port is published on the host. It serves the admin application and proxies private API requests to the API's private Docker interface.
+3. **`caddy`** serves the public hostname using [Caddyfile](./Caddyfile), obtains public ACME certificates, serves the recipient application, and proxies only public API traffic. It cannot access the private backend network, WireGuard keys, or the VPN CA. Both proxies import [Caddyfile.common](./Caddyfile.common) for headers and upstream settings.
+4. **`api`** is one shell-free Go process. [listeners.go](./cmd/vault/listeners.go) separates public and administrative handlers by interface and checks the admin proxy's actual source IP. [main.go](./cmd/vault/main.go) owns package state, opaque ciphertext records, quota accounting, expiration, and cleanup. There is no database or server-side plaintext decryption.
+
+```mermaid
+flowchart LR
+    Recipient[Recipient browser] -->|Public HTTPS| Public[Public Caddy]
+    Public -->|backend: public API| API[Go API and encrypted storage]
+    Device[Admin device] -->|WireGuard UDP 51821| WG[WireGuard namespace]
+    WG -->|Tunnel HTTPS only| Private[VPN Caddy in same namespace]
+    Private -->|vpn_backend: admin API| API
+```
+
+### Administration and upload, step by step
+
+1. Import a generated WireGuard profile into an admin device, connect, and open the tunnel's `/admin` URL over HTTPS. Trust only the independently verified VPN Caddy root certificate.
+2. On first use, [auth.js](./web/auth.js) derives a root from the chosen password using PBKDF2-SHA256 and the server's persistent random salt. HKDF derives separate authentication and private-name keys. The one-time setup token authorizes enrollment; the API stores only a hash of the authentication value. Later requests send the derived authentication value over HTTPS, never the password or name key. [auth.go](./cmd/vault/auth.go) verifies enrollment and login.
+3. [admin.js](./web/admin.js) asks the API to allocate a random package ID and upload token. The browser creates a fresh random AES-256 key. [crypto.js](./web/crypto.js) encrypts the manifest (including file paths) and file/text records with AES-GCM, binding every record to its package and index. Optional admin names are separately encrypted by [names.js](./web/names.js).
+4. Encrypted records are uploaded sequentially. The API accepts them only with valid admin authentication and the package's upload token, applies size/admission/storage limits, and stores opaque numbered records. Finalization verifies the record inventory and stores a hash of a claim proof derived from the package key; the package becomes `ready`.
+5. The browser builds a public share URL containing the package ID in the path and the key after `#`. Fragments are not sent in HTTP requests. The full link must still be shared through a trusted channel: whoever receives it can retrieve the content. Losing the key means losing the link; the server cannot reconstruct it.
+
+### Retrieval, expiration, and persistence
+
+1. [public.js](./web/public.js) captures the key into page memory, removes the fragment from the current history entry, and requests only availability metadata. Page visits and generic messaging previews do not claim or audit a retrieval.
+2. Only an explicit **Download**/**Reveal secret** action derives and sends the domain-separated claim proof. The API checks that proof and capacity before recording a durable retrieval start. [retrievals.go](./cmd/vault/retrievals.go) maintains the private, paginated audit; [browser.go](./cmd/vault/browser.go) interprets untrusted browser/device headers.
+3. One-time packages transition to `consuming` before returning bytes; each ciphertext record is unlinked before streaming it. Completion/failure destroys the remaining ciphertext. Reusable packages stay ready until expiration or deletion, retaining ciphertext across downloads. Their already-admitted streams may finish after revocation; cleanup waits for readers.
+4. The browser authenticates every AES-GCM record and enforces manifest/size/order bounds. File packages become a streaming ZIP/ZIP64 archive through [zip.js](./web/zip.js) and [download.js](./web/download.js); supported browsers use a native file handle or the backpressured [download-worker.js](./web/download-worker.js) local route. Text packages are decoded strictly and displayed literally, never as executable HTML. Decryption keys and plaintext are not uploaded.
+5. The API's periodic sweep expires packages; startup reconciles metadata, discards incomplete uploads/interrupted one-time claims, and cleans revoked data before serving. Ready reusable packages survive restarts. One API replica is mandatory because admission and claim locks are in-process.
+6. Named Docker volumes persist ciphertext/auth/audit (`packages`), public certificate state (`caddy_data`, `caddy_config`), private CA state (`caddy_vpn_data`, `caddy_vpn_config`), and VPN identities (`wireguard_config`). These are separate secrets and lifecycles. Read-only frontend files are mounted into both proxies. Browser sessions, passwords, file keys, decrypted names, and plaintext remain in tab memory rather than browser storage.
+
+The detailed cryptographic framing, privacy limits, and test commands below complement this execution flow. Client-side encryption does **not** protect future sessions from a compromised server that replaces its JavaScript.
 
 ## Network design
 
-The admin interface is **not publicly reachable**, even with a correct password. Public TCP 80/443 listeners serve only the configured `DOMAIN`; requests with an IP or unknown hostname are aborted without an HTTP response (HTTPS may instead fail during TLS negotiation). This is host-based routing, not an authentication boundary: clients can explicitly send the configured hostname. VPN access at `https://10.0.0.1/admin` remains available.
+The admin interface is **not publicly reachable**, even with a correct password. Public TCP 80/443 listeners serve only the configured `DOMAIN`; requests with an IP or unknown hostname are aborted without an HTTP response (HTTPS may instead fail during TLS negotiation). Hostname checks are not authentication: clients can explicitly send the configured hostname. Admin access instead requires an authenticated WireGuard tunnel and then application login, at **https://10.13.13.1/admin** by default.
 
-| Listener on the host | Purpose |
+| Listener | Purpose |
 | --- | --- |
-| Public-facing interface, TCP 80/443 | Package download pages, ACME certificate validation, public API |
-| VPN interface `10.0.0.1`, TCP 80 | HTTPS redirect for non-root paths |
-| VPN interface `10.0.0.1`, TCP 443 | Admin login, upload interface, audit API |
-| Go API | Private Docker network only; no host port |
+| Host `PUBLIC_BIND_IP`, TCP 80/443 | Public package pages/API and ACME |
+| Host `PUBLIC_BIND_IP`, UDP `WIREGUARD_PORT` (default 51821) | Encrypted WireGuard handshake/transport only |
+| Tunnel `VPN_BIND_IP` (default `10.13.13.1`), TCP 80/443 | Admin HTTPS and HTTP redirect; **not published on the host** |
+| Go API | Two private Docker interfaces; no host port |
 
-Connect to the VPN and open **https://10.0.0.1/admin**. No DNS or hosts-file changes are needed. Caddy issues and renews a certificate for `VPN_BIND_IP` using its internal certificate authority (`tls internal`); public CAs cannot issue certificates for this private IP. The public domain retains its publicly trusted certificate and explicitly returns 404 for admin pages, assets, and API paths. Share links still use the public domain. Caddy internally uses port 8443 for VPN HTTPS; users still use ordinary HTTPS port 443.
+No host VPN interface or hosts-file changes are needed. WireGuard creates its interface inside its container; admin Caddy shares that network namespace and binds only the tunnel IP. A dedicated `vpn_ingress` bridge permits publishing WireGuard UDP; keeping the namespace on an internal-only Docker network would suppress port publishing. The `vpn_backend` API network stays internal. The namespace has normal outbound connectivity for WireGuard and API traffic, but explicit firewall rules block forwarding through the tunnel. It is not an Internet/LAN/peer-to-peer VPN.
+
+Caddy issues and renews the `VPN_BIND_IP` certificate using its private internal CA (`tls internal`); public CAs cannot issue this private-IP certificate. Public Caddy independently uses ACME. Public admin pages, assets, and API routes return 404. Share links always use the public domain. HTTP inside the tunnel redirects to standard HTTPS port 443.
 
 Both Caddy services drop all capabilities except `NET_BIND_SERVICE` and retain `no-new-privileges`. The pinned Caddy binary carries the `cap_net_bind_service` file capability; dropping it from the container's capability bounding set prevents Linux from executing Caddy (`exec /usr/bin/caddy: operation not permitted`), even on the VPN proxy's high internal ports.
 
@@ -40,50 +74,26 @@ The admin certificate will show a browser trust warning unless you install the V
 docker compose cp caddy-vpn:/data/caddy/pki/authorities/local/root.crt ./vpn-root.crt
 ```
 
-The `caddy` service publishes only public-interface ports and joins `edge` plus `backend`. The `caddy-vpn` service publishes only VPN-interface ports, joins only the internal `vpn_backend` network, and has no Internet egress or shared writable state with public Caddy. The API joins both internal networks but binds separate listeners to fixed interface IPs: public `172.30.0.2:8080` and VPN `172.30.0.130:8081`. The public Go handler rejects every `/api/admin` route, including discovery and enrollment, even when Caddy routing is bypassed or valid admin credentials are supplied. The VPN Go handler additionally checks the actual TCP peer against the VPN proxy's fixed IP (`172.30.0.131`); forwarding headers cannot satisfy this check. Admin authentication is still required. Both listeners share one process and storage, so this is not process isolation against an API compromise. The read-only web assets and common proxy snippets are shared; VPN configuration, CA keys, and writable volumes are not mounted in the public proxy.
-
-### Upgrading from a single Caddy container
-
-The backend subnet is split into two non-overlapping networks within the API's existing trusted-proxy range, `172.30.0.0/24`. Recreate the networks during a maintenance window:
-
-```sh
-docker compose down
-# Do not add -v: retain packages, enrollment, and public certificates.
-docker compose up -d --build --wait
-```
-
-The new VPN volume generates a **new CA**. Verify and install its root certificate on admin devices, and remove trust for the previous local CA. Do not copy the old CA into the new volume: the old public Caddy previously had access to its private key. After the split, remove the obsolete local CA and private-IP certificates from public Caddy's retained volume (not its public ACME certificates):
-
-```sh
-docker compose exec caddy sh -c 'rm -rf /data/caddy/pki/authorities/local /data/caddy/certificates/local'
-```
+Public Caddy joins only `edge` and the internal `backend`. WireGuard joins only its dedicated `vpn_ingress` and internal `vpn_backend`; VPN Caddy shares its namespace at `172.30.0.131`, but not the WireGuard configuration volume. The API listens on public `172.30.0.2:8080` and private `172.30.0.130:8081`. Its public handler rejects all admin routes even with valid credentials; its private handler requires the actual socket peer to match `ADMIN_PROXY_IP` (`172.30.0.131`), independently of forwarding headers. Admin authentication is still required. `TRUSTED_PROXY_CIDR` defaults to `172.30.0.0/24` and controls client-IP header trust, not administrative access. Both listeners share one process/storage, so this is not process isolation against an API compromise.
 
 ### API listener configuration
 
-Compose fixes the API and VPN proxy IPs to enforce the interface boundary. Public Caddy targets only `172.30.0.2:8080`; VPN Caddy targets only `172.30.0.130:8081`. If changing the Docker subnets, update the static addresses, `PUBLIC_LISTEN_ADDR`, `ADMIN_LISTEN_ADDR`, `ADMIN_PROXY_IP`, both proxy upstreams, and the API's trusted-proxy range together. Do not use the multi-network `api` DNS name as an upstream: it can resolve to either interface.
+Compose fixes the API and VPN proxy IPs to enforce the interface boundary. Public Caddy targets only `172.30.0.2:8080`; VPN Caddy targets only `172.30.0.130:8081`. If changing the Docker subnets, update the static addresses, `PUBLIC_LISTEN_ADDR`, `ADMIN_LISTEN_ADDR`, `ADMIN_PROXY_IP`, both proxy upstreams, and `TRUSTED_PROXY_CIDR` together. The trusted CIDR must be a private IPv4 range between `/24` and `/32`; it never replaces the exact admin-proxy peer check. Do not use the multi-network `api` DNS name as an upstream: it can resolve to either interface.
 
 Outside Compose, Go defaults to `127.0.0.1:8080` (public), `127.0.0.1:8081` (admin), and admin proxy `127.0.0.1`. Wildcard or hostname listener bindings are rejected. Both listeners must bind successfully before requests are accepted; health checks require both listeners. Shutdown drains both listeners concurrently. Request/transfer admission limits remain shared; `MAX_BACKEND_CONNECTIONS` limits connections per listener so public sockets cannot consume the VPN listener's connection pool.
 
-Upgrading from the split-proxy deployment only requires `docker compose up -d --build --wait`; network recreation and another VPN CA replacement are unnecessary if the split networks and certificate volumes already exist.
+`PUBLIC_BIND_IP` must be a specific IPv4 address assigned to the host, never a wildcard. `VPN_BIND_IP` is different: it belongs to the container's WireGuard tunnel and must not be assigned to the host. Keep tunnel, Docker, host, and client LAN subnets non-overlapping. Only TCP 80/443 and the configured WireGuard UDP port should be allowed at the external firewall. Docker forwarding rules can bypass ordinary UFW rules; also enforce ingress policy at the upstream firewall.
 
-Keep `PUBLIC_BIND_IP` and `VPN_BIND_IP` distinct, specific interface addresses; never use wildcard bindings. Keep the VPN interface available before starting Compose. Interface binding and Docker network separation do not replace host firewall rules: allow VPN ports only through the VPN interface and ensure Docker forwarding rules cannot expose them from public networks.
+HTTPS is mandatory: browser WebCrypto does not work on plain HTTP VPN addresses. Do not put a CDN or external reverse proxy in front without redesigning client-IP/audit and trust boundaries. WireGuard peers receive only the server tunnel `/32` route; server-side forwarding rules enforce the restriction even if clients manually expand their routes.
 
-HTTPS is mandatory: browser WebCrypto does not work on plain HTTP VPN addresses. VPN HTTP redirects non-root paths to the VPN IP over HTTPS, rather than serving an insecure encryption page. Do not put a CDN or external reverse proxy in front without redesigning the IP/audit and trust boundaries.
+## Fresh deployment
 
-## Rebrand and fresh-start deployment
+Requirements: Linux with kernel WireGuard support, Docker Engine with Compose v2, DNS control, and adequate disk headroom. WireGuard needs kernel WireGuard plus IPv4/IPv6 netfilter support and `NET_ADMIN` in its own container namespace; it does not require privileged mode, host networking, a Docker socket, or `SYS_MODULE`. If the host lacks WireGuard, enable/install the host kernel support before starting; the container fails closed rather than falling back to an unsecured connection. Docker Desktop can run the automated namespace/tunnel tests, but real device reachability must also be checked on the Linux deployment.
 
-This release intentionally changes the authentication, private-name encryption, and package-claim cryptographic namespaces to `vault.miszori.dev`. It is **not compatible with credentials, encrypted names, or package claims created by the previous branding**. Do not attach the previous package volume to this release; no compatibility fallback or automatic data migration is provided.
-
-Production Compose now explicitly uses project name `vault-miszori-dev`, independent of the checkout folder, creating separate package and Caddy volumes. Bring down the previous deployment with `docker compose down` using its original Compose project name before starting this one, so the host ports and fixed backend subnet are free (stopping containers alone leaves the conflicting network allocated). Do not use `down -v` unless you deliberately want to erase that deployment's data; the rebrand does not delete its old volumes. Do not override the new project name with the old one or reuse an old `COMPOSE_PROJECT_NAME`/`-p` setting.
-
-Set `DOMAIN=vault.miszori.dev` in the real `.env` (existing `.env` files are not changed by an update), point its DNS record at the server, and generate a new `ADMIN_SETUP_TOKEN`. Enroll a new admin at `https://10.0.0.1/admin` and recreate any packages you still need. Share links and ZIP filenames now use the vault branding. Caddy obtains the new public hostname's certificate; the new local CA also needs verification/trust on admin devices. The GitHub repository is now `gmiszori/vault.miszori.dev`; an existing checkout folder need not be renamed.
-
-## Deploy
-
-Requirements: Linux server, Docker Engine with Compose v2, a working VPN with `10.0.0.1` assigned to the host, DNS control, and adequate free disk space. Docker Desktop is suitable for the local tests, not a substitute for the production VPN/network setup.
+Use fresh named volumes for this deployment. Compose project name is explicitly `vault-miszori-dev`. Do not reuse another application's volumes or override the project name to an old deployment's name. Check for conflicting host ports and Docker subnets without deleting other projects' resources.
 
 1. Point the domain's public A record to the server. Only publish an AAAA record if you also configure IPv6 listeners and firewall rules; the provided bindings are IPv4.
-2. Forward/open public TCP 80 and 443. Allow the VPN ports only over your VPN. Do **not** forward VPN address/ports from the internet. Docker-published ports can bypass ordinary UFW rules; enforce restrictions at the upstream firewall and Docker's supported firewall chain as well as binding to the correct interface.
+2. Forward/open public TCP **80/443** and UDP **51821** (or your chosen `WIREGUARD_PORT`) to the server. Do not publish extra admin TCP ports or forward the tunnel IP. A UDP firewall rule is separate from TCP. If behind NAT, forward the same configured UDP port to the host's `PUBLIC_BIND_IP`; the container listens internally on UDP 51820.
 3. Configure the environment:
 
 ```bash
@@ -92,23 +102,44 @@ chmod 600 .env
 openssl rand -hex 32
 ```
 
-Put the generated **one-time enrollment token** in `ADMIN_SETUP_TOKEN` (at least 32 characters). This is not the admin password; choose a different password in the browser during first setup. Set `ACME_EMAIL`, `DOMAIN`, and `PUBLIC_BIND_IP` to a **specific local interface address**. If the server is behind NAT, use the host's LAN address, not the router's external address. Never use `0.0.0.0`: it conflicts with, and defeats the separation from, the VPN binding. `PUBLIC_BIND_IP` and `VPN_BIND_IP` must be different addresses.
+Put the generated **one-time enrollment token** in `ADMIN_SETUP_TOKEN` (at least 32 characters). It is not the admin password; choose a different password in the browser. Set `ACME_EMAIL` to your email and `DOMAIN` to your public hostname. Set `PUBLIC_BIND_IP` to a **specific local host interface IPv4 address**—the LAN address if behind NAT, not the router's external IP, and never `0.0.0.0`.
+
+Set `WIREGUARD_ENDPOINT=vault.miszori.dev` (public DNS/IP, no scheme/port), `WIREGUARD_PORT=51821`, and `WIREGUARD_PEERS=admin`. Use distinct comma-separated alphanumeric peer names for additional devices, for example `laptop,phone`. The port is configurable; keep the firewall/NAT rule aligned with it. The tunnel uses `WIREGUARD_SUBNET=10.13.13.0/24` and `VPN_BIND_IP=10.13.13.1` by default; the address belongs inside the container, not on the host. Only IPv4 `/24` tunnel networks are supported. Choose a different non-overlapping subnet before deployment if necessary.
 
 4. Start:
 
 ```bash
 docker compose config --quiet
 docker compose up --build -d --wait
-docker compose logs --tail=30 api caddy
+docker compose logs --tail=30 wireguard api caddy caddy-vpn
 ```
 
-Caddy obtains/renews the public domain's certificate automatically using public DNS and inbound ACME access. The VPN IP certificate is issued locally by Caddy and needs neither DNS changes nor a Cloudflare API token. Deployment will fail to bind if the VPN address is not present. The internal networks use `172.30.0.0/25` (public proxy/API) and `172.30.0.128/25` (VPN proxy/API); ensure neither overlaps existing networks. Only the corresponding proxy and the API should join each network.
+WireGuard generates persistent identities and starts its tunnel; VPN Caddy waits for tunnel health before binding. Caddy obtains/renews the public domain's certificate using DNS and inbound ACME access. The VPN IP certificate is local and needs no external DNS/API token. The internal API networks use `172.30.0.0/25` (public) and `172.30.0.128/25` (private); neither may overlap another Docker network. Do not attach other containers to these networks. No extra host VPN service is needed.
 
-5. On each admin device, connect to WireGuard with a route covering `10.0.0.1`, then visit **https://10.0.0.1/admin**. Verify and accept the local certificate warning if your browser permits it, or install the Caddy root CA as described above. Remove any previous hosts-file override mapping `vault.miszori.dev` to `10.0.0.1`; public package links should use normal public DNS. For the branding transition, use the fresh project and enrollment described above. Subsequent updates within the vault namespace preserve enrolled credentials and encrypted names when the project and named volumes are retained. On first use, enter the setup token and choose/confirm a **different strong admin password** (16–1,024 Unicode characters). Username defaults to `admin`. The password is never sent to the server: the browser derives independent authentication and name-encryption keys. Later sign-ins use only that password and automatically unlock package names. The one-time token cannot replace or reset an enrolled password; remove `ADMIN_SETUP_TOKEN` from `.env` after enrollment if desired. Keep the data volume, including `auth.json` and `label-salt`.
+5. Export the device's WireGuard configuration and the VPN root certificate through a trusted local channel:
+
+```bash
+install -d -m 700 ./vpn-export
+docker compose cp wireguard:/config/peers/admin/admin.conf ./vpn-export/admin.conf
+docker compose cp caddy-vpn:/data/caddy/pki/authorities/local/root.crt ./vpn-export/vpn-root.crt
+chmod 600 ./vpn-export/*
+```
+
+The profile contains a **private key**: never commit it, paste it in chat, expose it through a website, or share one profile between devices. Import it into the official WireGuard client, activate the tunnel, and install the independently verified `vpn-root.crt` in that device/browser's trust store. The generated profile routes only `10.13.13.1/32`, leaving other traffic unchanged; no DNS override is needed. Delete exported copies after securely transferring them. The encrypted UDP tunnel does not remove the need for trusted HTTPS/WebCrypto.
+
+6. Open **https://10.13.13.1/admin**. Enter the setup token and choose/confirm a **different strong admin password** (16–1,024 Unicode characters). Username defaults to `admin`. The password never goes to the server; the browser derives independent authentication and name-encryption keys. Subsequent sign-ins use that password and unlock names. The setup token cannot reset an enrolled password; remove `ADMIN_SETUP_TOKEN` after enrollment if desired. Preserve the `packages` volume, including `auth.json` and `label-salt`.
 
 All sessions and name keys stay in tab memory and are cleared on sign-out/leaving. Private API requests carry a derived authentication value over HTTPS, not the password. This is deliberately a single-admin VPN application, not a public identity/MFA provider. Both public and VPN `/` redirect to **https://gergo.miszori.dev** with HTTP 302; package links and admin routes stay on this site. Use `/admin` explicitly.
 
-6. Verify **from a device outside the VPN** that `/admin`, `/admin/api/packages`, and `/api/admin/packages` return 404. Public recipients use the public domain; the VPN IP is for administration only.
+7. Verify **outside the VPN** that public `/admin`, `/admin/api/packages`, and `/api/admin/packages` return 404 and that the tunnel admin URL is unreachable. With the peer connected, verify admin loads and login works. Public recipients keep using the public domain, without WireGuard.
+
+```bash
+docker compose ps
+docker compose exec wireguard wg show wg0
+# A connected client should show a recent handshake; never print private configuration.
+```
+
+A healthy container proves only local tunnel setup, not that your firewall/NAT permits a remote device. If handshakes are absent, check endpoint DNS, the configured UDP port, host/upstream firewall, and NAT forwarding. If a handshake succeeds but admin fails, check peer route, subnet overlap, VPN Caddy logs, and CA trust. The tunnel provides device-key authentication, not MFA.
 
 Do not run the local test stack on a production host with this network already allocated.
 
@@ -203,7 +234,7 @@ The Docker `packages` volume stores one directory per package plus the public `l
 - **Bounded load:** fixed-window global and per-IP request/failure budgets, nonblocking request/upload/download admission, and a capped backend TCP listener. Per-IP public/discovery limits are checked before spending the corresponding shared budget, so requests from an already-blocked client cannot drain it. VPN authentication discovery/setup uses a separate budget from public package traffic; each shared budget uses `PUBLIC_REQUESTS_PER_MINUTE`. Admission classifies leading/trailing slashes the same way as the public router, so alternate accepted claim paths cannot bypass the download limit. Authenticated chunk uploads are deliberately not counted against the public per-minute budget, so 20 GiB uploads can finish. HTTP 429 is returned before claim mutation; the client preserves its key and can retry. Successful credentials are not rejected solely because the global failure budget is exhausted. Distributed traffic can still exhaust shared budgets; these controls are not DDoS protection.
 - **Minimal runtime:** the API is a static Go binary in a shell-free `scratch` image, UID/GID 10001, read-only root, dropped capabilities, no-new-privileges, bounded memory/PIDs/file descriptors, and disabled core dumps. Its health check is built into `/vault healthcheck`. Caddy retains only its needed bind capability; its management API is disabled.
 - **Proxy and log controls:** header-size/header-read/idle limits, at most 64 upstream connections, and no fixed total response timeout. Caddy's default error logger removes claim/upload/authentication/cookie credentials; access logging remains disabled. Production container logs are rotated at 10 MiB × 3 per service.
-- **Supply chain:** Docker inputs are pinned by digest; official GitHub Actions are pinned to verified commit SHAs, use read-only repository permissions, and do not retain checkout credentials. CI runs `govulncheck` against both source and the exact production binary, with Go telemetry disabled. Dependabot proposes Dockerfile and GitHub Action updates; review and merge them rather than leaving pins stale. Check the Caddy Compose image digest for updates as well.
+- **Supply chain:** Base images/Caddy are pinned by digest; WireGuard tools come from Alpine's signed package repositories at image-build time. Official GitHub Actions are pinned to commit SHAs, use read-only permissions, and do not retain checkout credentials. CI runs source/exact-binary `govulncheck`, Go race/static checks, browser tests, and Docker/WireGuard integration tests. Dependabot proposes API/WireGuard Dockerfile and Action updates; review these and the Caddy Compose digest regularly. Digest pins do not replace rebuilding or vulnerability monitoring.
 
 | Setting | Default |
 | --- | ---: |
@@ -231,7 +262,10 @@ Limits must be positive and internally consistent: upload/download limits cannot
 ├── .dockerignore         Keeps secrets out of Docker builds
 ├── compose.yaml          Production services, volumes, network/port boundaries
 ├── Dockerfile            Multi-stage Go build; non-root minimal runtime
-├── Caddyfile             Public HTTPS and separate VPN admin HTTPS routes
+├── Caddyfile             Public HTTPS routes; admin explicitly excluded
+├── Caddyfile.vpn         Tunnel-IP-only admin HTTPS
+├── Caddyfile.common      Shared security headers and proxy settings
+├── wireguard/            Pinned runtime image, config/startup and persistence tests
 ├── go.mod                Go version/module; standard library only
 ├── package.json          ES-module/test metadata; no browser dependencies
 ├── cmd/vault/
@@ -267,6 +301,11 @@ Limits must be positive and internally consistent: upload/download limits cannot
 │   ├── Caddyfile         HTTP loopback test listeners (never deploy publicly)
 │   ├── integration.test.mjs  Actual Caddy/API encryption/claim/large-transfer tests
 │   ├── metadata.test.mjs Encrypted-name privacy, browser audit and preview tests
+│   ├── wireguard.test.mjs Real encrypted peer/admin/API/forwarding isolation test
+│   ├── vpn-probe.go      TLS-verifying HTTP client used inside a test peer
+│   ├── vpn-tls.test.mjs  Proxy startup, TLS policies and routing
+│   ├── proxy-isolation.test.mjs Production Compose boundary assertions
+│   ├── backend-listeners.test.mjs API interface and actual peer restrictions
 │   ├── auth-helper.mjs   Independent test enrollment/key-derivation fixture
 │   └── claim-helper.mjs  Independent file-key-to-claim proof fixture
 └── README.md             Architecture, setup, protocol, limits, verification
@@ -288,8 +327,14 @@ docker run --rm -v "$PWD:/src" -w /src golang:1.26-alpine \
 # Browser-module tests
 node --test web/*.test.mjs
 
-# Standalone production proxy startup/TLS regression, using production capability settings
-node --test tests/vpn-tls.test.mjs
+# Standalone proxy capability/TLS/routing regression
+node --test tests/proxy-isolation.test.mjs tests/vpn-tls.test.mjs
+
+# WireGuard configuration, persistence and invalid-input tests
+node --test wireguard/*.test.mjs
+
+# Fresh disposable production topology: real WireGuard peer + admin TLS/API
+node --test tests/wireguard.test.mjs
 
 # Local stack; HTTP is safe for WebCrypto on loopback only
 docker compose -p vault-test -f tests/compose.yaml up --build -d --wait
@@ -306,32 +351,50 @@ LARGE_TEST_MIB=192 SLOW_RECORD_MS=6500 node --test --test-name-pattern='optional
 docker compose -p vault-test -f tests/compose.yaml down -v
 ```
 
-While the test stack is running, use a generated `http://localhost:18080/package/...#key` link for the public UI; the bare root redirects to https://gergo.miszori.dev. Admin UI is `http://localhost:18081/admin`. Tests automatically enroll user `admin`, password `integration-admin-password-with-zero-server-knowledge`, using token `integration-setup-token-never-deploy-1234567890`. These test-only values are deliberately fixed and **must never be deployed**. For manual first-setup testing, use those same values before running the suite, or start with a new disposable test volume. Production certificate issuance, real VPN reachability, split DNS, firewall enforcement, and multiple real browser/OS combinations must be verified on the deployment server separately.
+While the test stack is running, use a generated `http://localhost:18080/package/...#key` link for the public UI; the bare root redirects to https://gergo.miszori.dev. Admin UI is `http://localhost:18081/admin`. Tests automatically enroll user `admin`, password `integration-admin-password-with-zero-server-knowledge`, using token `integration-setup-token-never-deploy-1234567890`. These test-only values are deliberately fixed and **must never be deployed**. For manual first-setup testing, use those same values before running the suite, or start with a new disposable test volume. Production certificate issuance, remote VPN reachability, firewall enforcement, and real browser/OS combinations must still be verified on the deployment server separately.
 
-### Verification performed
-
-An actual **20 GiB** package was AES-GCM encrypted, uploaded through Caddy to Docker storage, downloaded once, authenticated/decrypted record by record, and byte-compared successfully (about 195 seconds on the development machine). Sampled container memory during this transfer was approximately 24–28 MiB for the API and 20–26 MiB for Caddy; the transfer did not require buffering the package. This is a protocol/storage test, not a claim that every browser/device can save a 20 GiB archive. The production Caddy configuration was also exercised with a local TLS certificate and reduced container capabilities: public admin requests returned 404 while the separate private admin API returned 200 with credentials. Browser-module tests and the Go race detector/static checks passed. Docker integration tests verified concurrent one-time claims, tamper detection, IP spoof rejection, deletion, and a real 60-second expiry followed by background cleanup. Browser checks covered the responsive pages, real login/file/folder uploads, independent decryption of a browser-created package, fragment removal, and decrypted archive generation. The streaming UI path was exercised with a test writable destination; native OS Save dialogs and large-browser filesystem saves still need a real-device check.
-
-The ZIP update was additionally tested with another **actual 20 GiB** encrypted round trip written to a streaming ZIP64 archive (about 212 seconds). Python's independent ZIP reader validated every entry CRC, a file above 4 GiB, subsequent entry offsets above 4 GiB, Unicode paths, and an empty file. The generated archive and ciphertext test data were cleaned up afterward. Regular ZIP headers, exact archive sizing, backpressure, and incomplete/sink-error handling are also covered by tests. A real browser-created Unicode-file package was uploaded, downloaded as ZIP, and independently checked with Python for original contents and CRC validity. Mobile admin and download pages were checked at 390 pixels wide with no horizontal page overflow; the audit table scrolls internally.
-
-The private-metadata update passed 42 browser-module tests, nine Docker integration tests, and backend race/static checks. Browser testing verified black page/panel backgrounds, no mobile overflow, real encrypted-name upload, cleared passphrase inputs, and name removal after locking. The browser-created label was independently decrypted with Node and confirmed absent from server metadata and public HTML in plaintext. A real browser claim recorded Chrome/macOS/desktop; a Docker restart preserved the KDF salt, encrypted label, and audit. Preview bot requests returned rendered generic cards and valid PNG artwork without claiming or recording an opening.
-
-The unified-login/portable-download revision passed **65 browser-module tests** and ten Docker integration tests, plus backend race/static checks. Real browser first-use enrollment succeeded; an independent Node derivation authenticated against that browser-created account and verified the stored file contains only the expected SHA-256 verifier, never the password, setup token, or authentication value. The UI automatically decrypted independently created names, displayed matching 1232px upload/audit panels in a 1280px viewport, and had a 0px header divider.
-
-Service Worker registration/control/probe and an actual synthetic ZIP response were verified in an independent installed Chrome profile (HTTP 200, exact byte count, ZIP attachment headers). VS Code's integrated Electron browser stalled worker activation, so the safe fallback path was also exercised; this is why feature detection alone is not treated as successful streaming support. Native Save dialogs and Firefox/Safari/iOS large-file saves still need real-device verification; no universal browser guarantee is made.
-
-The hardening revision passed **74 browser-module tests**, eleven Docker integration tests, backend race/static checks, and both source and exact-production-binary `govulncheck` scans (no known reachable vulnerabilities found). ID-only, wrong-token, and verifier-only requests were proven not to modify retrieval audit/state or delete ciphertext. Capacity rejection left packages ready for retry. The minimal image ran healthy as UID/GID 10001 and had no shell; an actual proxy error confirmed credential-header redaction.
-
-A throttled **192 MiB encrypted download completed in 165 seconds**, beyond the previous two-minute cutoff, and Python independently checked its archive contents/CRCs. The accelerated TCP regression failed on the old code after 8 MiB with unexpected EOF and passed after the deadline fix. Production Caddy TLS routing was also tested with an HTTP/2 bodyless, proof-authorized claim and a 404 “Not found” root. Consumed/failed/expired records no longer offer Delete in the admin UI; names remain editable for historical identification.
-
-## Maintenance
+If another Docker project already uses `172.30.0.0/24`, leave that project's network untouched. Choose a free private `/24` and configure **all** test addresses together before starting the local stack and running its tests, for example:
 
 ```bash
-# Update/rebuild, preserving named volumes
-docker compose pull
-docker compose up --build -d --wait
-# Rebind/reload updated Caddy routing (ZIP/names modules and preview templates)
-docker compose up -d --force-recreate caddy
+export TEST_PUBLIC_SUBNET=172.29.0.0/25 TEST_PRIVATE_SUBNET=172.29.0.128/25
+export TEST_PUBLIC_API_IP=172.29.0.2 TEST_PRIVATE_API_IP=172.29.0.130
+export TEST_ADMIN_PROXY_IP=172.29.0.131 TEST_TRUSTED_PROXY_CIDR=172.29.0.0/24
+docker compose -p vault-test -f tests/compose.yaml up --build -d --wait
+node --test tests/*.test.mjs
+docker compose -p vault-test -f tests/compose.yaml down -v
 ```
 
-Restarting intentionally destroys incomplete uploads and interrupted one-time downloads. Interrupted reusable downloads can be restarted from the beginning while the package is ready and unexpired. Ready packages survive until consumed/expired/deleted. `docker compose down` preserves data; `docker compose down -v` irreversibly removes packages and Caddy certificate state. Do not scale the API above one replica. `ADMIN_PASSWORD` is no longer supported. Enrollment is one-time; changing `.env` does not change an enrolled password or its name key. There is no online password-reset/change flow. Deliberate offline re-enrollment requires stopping the API, removing only `auth.json`, preserving `label-salt`, and supplying a new setup token. Choosing a different password will not decrypt previous names; independent file share links remain unaffected. Audit records are sensitive personal data: disclose IP/time and browser/device-header collection to users and choose retention/deployment practices appropriate to your jurisdiction.
+The standalone WireGuard test uses its own disposable project and `172.28.0.0/24`; reserve that range for it when running the suite. It leaves other projects' containers, networks, volumes, and keys untouched.
+
+### Coverage and limits
+
+Backend tests exercise authentication, split-listener boundaries, concurrent claims, quotas/admission, durable metadata/audit recovery, deletion/expiry, and transfer deadlines. Browser tests independently verify cryptographic framing/derivation, ZIP/ZIP64 interoperability, streaming backpressure, text rendering, and page lifecycle cleanup. Docker tests exercise real proxies/API, generic previews, encrypted file/text round trips, and public/admin isolation. WireGuard tests additionally perform an actual encrypted handshake and admin HTTPS/API requests through a peer, reject forwarding, and verify that no admin TCP port is host-published.
+
+The optional large-transfer test writes a real archive and validates every entry using Python's independent ZIP reader; it needs disk space proportional to the chosen size. Automated tests are not proof of successful native save dialogs on every browser, production ACME issuance, remote VPN reachability, host firewall correctness, or an independent security audit. Check these on the deployment and actual admin/recipient devices.
+
+## Operations and maintenance
+
+```bash
+# Apply reviewed code/image/configuration updates, retaining named volumes
+git pull --ff-only
+docker compose pull
+docker compose up --build -d --wait
+# Apply proxy configuration changes explicitly
+docker compose up -d --force-recreate caddy caddy-vpn
+```
+
+For peer additions/removals, endpoint changes, or UDP-port changes, edit `.env`, update firewall/NAT if needed, and recreate **both** namespace-sharing services:
+
+```bash
+docker compose up -d --force-recreate --wait wireguard caddy-vpn
+```
+
+**Independent gateway restart limitation:** Docker assigns a new network namespace when `wireguard` restarts independently (including an automatic restart after a crash). A still-running `caddy-vpn` remains in the old namespace and admin access stops, even if WireGuard is healthy. `depends_on.restart` handles Compose-managed operations, not Docker's automatic restart policy. There is deliberately no watchdog or Docker-socket-based auto-healer. Recover by recreating **both** services with the command above, then reconnect the client and verify admin HTTPS. Public downloads are unaffected. Reboot/startup and planned updates should also be checked end to end; container health is not a remote reachability guarantee.
+
+Re-export affected profiles through the trusted channel; imported client profiles do not update themselves. Remove a device's name from `WIREGUARD_PEERS` and recreate the services to revoke that peer. Existing peer keys/address reservations are retained across reorder/removal; re-adding the same name re-enables that identity. For a compromised/lost device, use a **new peer name** for its replacement rather than re-enabling the old key. At most 253 peer addresses can be reserved; removed reservations are not reused. Tunnel subnet/server-address changes require a new WireGuard configuration volume and re-enrollment of devices; do not delete it casually.
+
+Never publish client configurations or the server/CA private keys. Keep WireGuard identity and VPN CA volumes across normal restarts; deleting them changes device/certificate trust.
+
+Restarting destroys incomplete uploads and interrupted one-time downloads. Reusable downloads may restart from the beginning while ready/unexpired; ready packages survive restarts. `docker compose down` preserves named volumes; **`docker compose down -v` irreversibly removes packages, enrollment, audits, certificates, and VPN keys**. Do not scale the API above one replica. Monitor disk headroom and cleanup-error logs; ciphertext quotas do not cover all audit/filesystem overhead.
+
+Enrollment is one-time: changing `.env` does not change an enrolled password or name key. There is no online password reset/change flow. Deliberate offline re-enrollment requires stopping the API, removing only `auth.json`, preserving `label-salt`, and supplying a new setup token. A different password cannot decrypt previous names; existing independent file share links are unaffected. Audit records are sensitive personal data: disclose IP/time/browser-header collection and choose appropriate retention/deployment practices.

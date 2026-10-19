@@ -77,6 +77,12 @@ function channel(worker, signal, onFailure, probe = false) {
     ready,
     url: `/local-download/${token}`,
     token,
+    progress(bytes) {
+      if (failure) throw failure;
+      if (finished) throw new Error('The local download has ended.');
+      // Only actual encrypted reads renew the worker deadline, never a timer.
+      send('progress', { bytes });
+    },
     async initialize(fileName, size) {
       const initialized = wait('initialized');
       send('initialize', { fileName, size });

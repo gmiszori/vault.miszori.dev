@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"fmt"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
@@ -9,21 +10,56 @@ import (
 )
 
 func TestRetrievalMetadataFailureBeforeBytes(t *testing.T) {
-	s := testServer(t)
-	id := reusablePackage(t, s)
-	blocked := filepath.Join(s.dir(id), "meta.json.tmp")
-	if err := os.Mkdir(blocked, 0700); err != nil {
-		t.Fatal(err)
-	}
-	w := directClaim(s, id, downloadClaimTokenFixture, nil)
-	if w.Code != 500 || w.Header().Get("Content-Type") == "application/octet-stream" {
-		t.Fatal("metadata error served ciphertext", w.Code)
-	}
-	if len(auditPage(t, s, id, "").Retrievals) != 1 {
-		t.Fatal("metadata failure lost durable attempted retrieval")
-	}
-	if err := os.Remove(blocked); err != nil {
-		t.Fatal(err)
+	for _, oneTime := range []bool{false, true} {
+		t.Run(fmt.Sprintf("oneTime=%v", oneTime), func(t *testing.T) {
+			s := testServer(t)
+			id := reusablePackage(t, s)
+			p := s.packages[id]
+			p.OneTime = oneTime
+			if err := s.save(p); err != nil {
+				t.Fatal(err)
+			}
+			blocked := filepath.Join(s.dir(id), "meta.json.tmp")
+			if err := os.Mkdir(blocked, 0700); err != nil {
+				t.Fatal(err)
+			}
+			w := directClaim(s, id, downloadClaimTokenFixture, nil)
+			if w.Code != 500 || w.Header().Get("Content-Type") == "application/octet-stream" {
+				t.Fatal("metadata error served ciphertext", w.Code)
+			}
+			page := auditPage(t, s, id, "")
+			if len(page.Retrievals) != 1 || p.RetrievalCount != 1 || p.OpenedAt == nil || !page.Retrievals[0].OpenedAt.Equal(*p.OpenedAt) || page.Retrievals[0].OpenedIP != p.OpenedIP {
+				t.Fatal("metadata failure lost durable attempted retrieval", page)
+			}
+			if err := os.Remove(blocked); err != nil {
+				t.Fatal(err)
+			}
+			if err := s.sweep(); err != nil {
+				t.Fatal(err)
+			}
+			if oneTime {
+				if p.Status != "failed" || directClaim(s, id, downloadClaimTokenFixture, nil).Code != 404 {
+					t.Fatal("one-time metadata failure did not fail closed")
+				}
+				if _, err := os.Stat(s.chunk(id, 0)); !os.IsNotExist(err) {
+					t.Fatal("one-time failure left ciphertext after cleanup retry", err)
+				}
+			} else {
+				if p.Status != "ready" {
+					t.Fatal("reusable metadata failure revoked valid package", p.Status)
+				}
+				if w := directClaim(s, id, downloadClaimTokenFixture, nil); w.Code != 200 || w.Body.Len() != 72 {
+					t.Fatal("reusable metadata failure prevented retry", w.Code)
+				}
+				if p.RetrievalCount != 2 || len(auditPage(t, s, id, "").Retrievals) != 2 {
+					t.Fatal("retry lost or duplicated durable audit entries")
+				}
+			}
+			restarted, err := newServer(s.root, s.user, "", s.origin, s.quota)
+			if err != nil || restarted.packages[id].Status != p.Status || restarted.packages[id].RetrievalCount != p.RetrievalCount {
+				t.Fatal("metadata recovery lost package or durable audit", err)
+			}
+		})
 	}
 }
 

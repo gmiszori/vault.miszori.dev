@@ -2,6 +2,8 @@
 const sessions = new Map();
 const TOKEN = /^[a-f0-9]{64}$/;
 const MAX_CHUNK = 8 * 1024 * 1024;
+// At most 20 GiB of files, one 8 MiB manifest and 30,000 record headers/tags.
+const MAX_ENCRYPTED = 20 * 1024 ** 3 + MAX_CHUNK + 30000 * 20;
 const TIMEOUT = 120000;
 
 self.addEventListener('install', () => { /* Updates wait for existing controlled pages to close. */ });
@@ -34,7 +36,7 @@ self.addEventListener('message', event => {
     const owner = await self.clients.get(event.source?.id);
     if (!owner || owner.type !== 'window' || new URL(owner.url).origin !== self.location.origin || owner.id !== event.source.id) { port.close(); return; }
     if (sessions.has(data.token) || sessions.size >= 8) { port.close(); return; }
-    const session = { token: data.token, nonce: data.nonce, owner: owner.id, port, probe: data.probe === true, used: false, initialized: false, waiting: false, written: 0 };
+    const session = { token: data.token, nonce: data.nonce, owner: owner.id, port, probe: data.probe === true, used: false, initialized: false, waiting: false, written: 0, encryptedRead: 0 };
     sessions.set(session.token, session);
     touch(session);
     port.onmessage = ({ data: message }) => {
@@ -48,6 +50,8 @@ self.addEventListener('message', event => {
           session.size = message.size;
           session.initialized = true;
           send(session, 'initialized');
+        } else if (message.type === 'progress' && !session.probe && Number.isSafeInteger(message.bytes) && message.bytes > 0 && message.bytes <= MAX_CHUNK + 16 && session.encryptedRead + message.bytes <= MAX_ENCRYPTED) {
+          session.encryptedRead += message.bytes;
         } else if (message.type === 'chunk' && session.waiting && message.bytes instanceof Uint8Array && message.bytes.byteLength > 0 && message.bytes.byteLength <= MAX_CHUNK) {
           if (session.written + message.bytes.byteLength > session.size) throw new Error('Download size mismatch.');
           session.waiting = false;

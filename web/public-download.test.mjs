@@ -90,9 +90,10 @@ test('preclaim 429 aborts the prepared worker but preserves the key and proof fo
     CHUNK_SIZE, MEMORY_LIMIT, decodeKey, importKey, decryptChunk, parseManifest, FramedReader,
     formatBytes, ZipWriter, archiveSize, deriveClaimToken,
     prepareServiceWorkerDownload: async ({ signal }) => {
-      const session = { signal, aborted: false, closed: false, initialized: false, parts: [] };
+      const session = { signal, aborted: false, closed: false, initialized: false, parts: [], encryptedRead: 0 };
       sessions.push(session);
       return {
+        progress(bytes) { session.encryptedRead += bytes; },
         async initialize() { session.initialized = true; },
         async write(bytes) { session.parts.push(Buffer.from(bytes)); },
         async close() { session.closed = true; },
@@ -125,6 +126,7 @@ test('preclaim 429 aborts the prepared worker but preserves the key and proof fo
   assert.equal(sessions[0].aborted, true);
   assert.equal(sessions[0].initialized, false);
   assert.equal(sessions[0].parts.length, 0);
+  assert.equal(sessions[0].encryptedRead, 0);
   assert.equal(context.state().available, true);
   assert.equal(context.state().busy, false);
   assert.deepEqual([...context.state().key], [...raw]);
@@ -145,6 +147,7 @@ test('preclaim 429 aborts the prepared worker but preserves the key and proof fo
   assert.equal(sessions[1].initialized, true);
   assert.equal(sessions[1].closed, true);
   assert.equal(sessions[1].aborted, false);
+  assert.equal(sessions[1].encryptedRead, body.length);
   assert.equal(Buffer.concat(sessions[1].parts).length, archiveSize(files));
   assert.equal(element('package-state').textContent, 'Downloaded');
   assert.equal(context.state().key, null);

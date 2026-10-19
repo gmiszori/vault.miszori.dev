@@ -900,12 +900,17 @@ test('VPN admin uses a local IP certificate and redirects to the IP without chan
   const publicConfig = await readFile(new URL('../Caddyfile', import.meta.url), 'utf8');
   assert.doesNotMatch(publicConfig, /VPN_BIND_IP|tls internal|:8443|:8081/);
   const compose = await readFile(new URL('../compose.yaml', import.meta.url), 'utf8');
-  assert.match(config, /default_sni \{\$VPN_BIND_IP:10\.0\.0\.1\}/);
-  assert.match(config, /https:\/\/\{\$VPN_BIND_IP:10\.0\.0\.1\}:8443 \{\s*tls internal/);
-  assert.match(config, /redir https:\/\/\{\$VPN_BIND_IP:10\.0\.0\.1\}\{uri\} 308/);
-  assert.doesNotMatch(config, /https:\/\/\{\$DOMAIN\}:8443/);
-  assert.match(compose, /VPN_BIND_IP: \$\{VPN_BIND_IP:-10\.0\.0\.1\}/);
-  assert.match(compose, /PUBLIC_ORIGIN: https:\/\/\$\{DOMAIN:-vault\.miszori\.dev\}/);
+  assert.match(config, /default_sni \{\$VPN_BIND_IP:10\.13\.13\.1\}/);
+  assert.match(config, /^:80 \{\s*bind \{\$VPN_BIND_IP:10\.13\.13\.1\}/m);
+  assert.match(config, /^https:\/\/\{\$VPN_BIND_IP:10\.13\.13\.1\}(?::443)? \{\s*bind \{\$VPN_BIND_IP:10\.13\.13\.1\}\s*tls internal/m);
+  assert.match(config, /redir https:\/\/\{\$VPN_BIND_IP:10\.13\.13\.1\}\{uri\} 308/);
+  assert.doesNotMatch(config, /:8443|:8081/);
+  const privateProxy = /^  caddy-vpn:\n([\s\S]*?)(?=^  [a-z][\w-]*:|^[^\s])/m.exec(compose)?.[1];
+  assert.ok(privateProxy);
+  assert.match(privateProxy, /VPN_BIND_IP: \$\{VPN_BIND_IP:-10\.13\.13\.1\}/);
+  assert.match(privateProxy, /^    network_mode: service:wireguard$/m);
+  assert.doesNotMatch(privateProxy, /^    (?:ports|networks):/m);
+  assert.match(privateProxy, /PUBLIC_ORIGIN: https:\/\/\$\{DOMAIN:-vault\.miszori\.dev\}/);
 });
 
 test('HTML entrypoints reference only the agreed self-hosted assets and contain no inline scripts or styles', async () => {
@@ -1571,6 +1576,211 @@ test('text upload sends only encrypted records and metadata, rejects oversized U
     assert.equal(ui.$('package-text').value, '');
   } finally { ui.restore(); }
 });
+
+test('pagehide invalidates a pending file destination without disturbing a restored transfer', async () => {
+  const data = await packageStream(files, [content]);
+  let releasePicker;
+  let releaseBody;
+  let picks = 0;
+  let claims = 0;
+  let oldAborts = 0;
+  let newAborts = 0;
+  const ui = await harness('public', async (_, options) => {
+    if (options.method === 'POST') {
+      claims++;
+      return new Promise(resolve => { releaseBody = resolve; });
+    }
+    return json({ status: 'ready', oneTime: false, expiresAt: '2099-01-01T00:00:00Z' });
+  }, { hash: `#${encodeKey(data.raw)}`, picker() {
+    if (++picks === 1) return new Promise(resolve => { releasePicker = resolve; });
+    return { createWritable: async () => ({ async write() {}, async close() {}, async abort() { newAborts++; } }) };
+  } });
+  let oldDownload;
+  let newDownload;
+  try {
+    await until(() => !ui.$('download-button').disabled);
+    oldDownload = ui.$('download-button').dispatch('click');
+    assert.ok(releasePicker);
+    await ui.win.dispatch('pagehide');
+    await ui.win.dispatch('pageshow', { persisted: true });
+    location.hash = `#${encodeKey(data.raw)}`;
+    await ui.win.dispatch('hashchange');
+    await until(() => !ui.$('download-button').disabled);
+    newDownload = ui.$('download-button').dispatch('click');
+    await until(() => releaseBody);
+    releasePicker({ createWritable: async () => ({ async abort() { oldAborts++; } }) });
+    await oldDownload;
+    assert.equal(claims, 1, 'a stale save gesture must never consume after returning');
+    assert.equal(oldAborts, 1);
+    assert.equal(newAborts, 0);
+    assert.equal(ui.$('download-button').disabled, true);
+    assert.equal(ui.$('cancel-download').hidden, false);
+    assert.equal(ui.$('package-state').textContent, 'Downloading');
+    releaseBody(new Response(data.body));
+    await newDownload;
+    assert.equal(ui.$('package-state').textContent, 'Ready');
+    assert.equal(ui.$('download-button').disabled, false);
+    assert.equal(newAborts, 0);
+  } finally {
+    releasePicker?.({ createWritable: async () => ({ async abort() {} }) });
+    releaseBody?.(new Response(data.body));
+    await Promise.all([oldDownload, newDownload]);
+    ui.restore();
+  }
+});
+
+for (const failure of ['finalize failure', 'finalize cancellation']) {
+  test(`text ${failure} preserves the draft for a fresh upload`, async () => {
+    const value = 'Only draft\n秘密 🔐';
+    const calls = [];
+    let creations = 0;
+    let finish;
+    const ui = await signedInAdmin(adminFetcher(async (path, options) => {
+      calls.push([path, options]);
+      if (path.endsWith('/packages') && options.method === 'POST') {
+        return json({ id: `draft-${++creations}`, uploadToken: `token-${creations}`, expiresAt: '2099-01-01T00:00:00Z' });
+      }
+      if (path === '/admin/api/packages/draft-1/finalize') return new Promise(resolve => { finish = resolve; });
+      return new Response(null, { status: 204 });
+    }));
+    let pending;
+    try {
+      ui.$('package-format').value = 'text';
+      await ui.$('package-format').dispatch('change');
+      ui.$('package-text').value = value;
+      await ui.$('package-text').dispatch('input');
+      pending = ui.$('upload-button').dispatch('click');
+      await until(() => finish);
+      assert.equal(ui.$('package-text').value, value, 'keep the only draft while finalization is pending');
+      if (failure === 'finalize cancellation') await ui.$('abort-upload').dispatch('click');
+      finish(new Response(null, { status: failure === 'finalize failure' ? 500 : 204 }));
+      await pending;
+      assert.equal(ui.$('package-text').value, value);
+      assert.equal(ui.$('package-text').disabled, false);
+      assert.equal(ui.$('upload-button').disabled, false);
+      assert.equal(ui.$('share-link').value, '');
+      assert.equal(ui.$('result-panel').hidden, true);
+      assert.deepEqual(calls.map(([path, options]) => [options.method, path]), [
+        ['POST', '/admin/api/packages'], ['PUT', '/admin/api/packages/draft-1/chunks/0'],
+        ['PUT', '/admin/api/packages/draft-1/chunks/1'], ['POST', '/admin/api/packages/draft-1/finalize'],
+        ['DELETE', '/admin/api/packages/draft-1']
+      ]);
+      assert.match(ui.$('upload-status').textContent, failure === 'finalize failure' ? /HTTP 500/ : /Upload cancelled/);
+      await ui.$('upload-button').dispatch('click');
+      assert.equal(creations, 2, 'explicit retry creates a new upload rather than resuming the deleted package');
+      const key = await importKey(decodeKey(ui.$('share-link').value.split('#')[1]));
+      const ciphertext = calls.find(([path]) => path === '/admin/api/packages/draft-2/chunks/1')[1].body;
+      assert.equal(new TextDecoder().decode(await decryptChunk(key, 'draft-2', 1, ciphertext)), value);
+      assert.equal(ui.$('package-text').value, '', 'successful finalization clears the draft');
+      ui.$('package-text').value = 'Scrub on signout';
+      await ui.$('logout').dispatch('click');
+      assert.equal(ui.$('package-text').value, '');
+    } finally {
+      finish?.(new Response(null, { status: 500 }));
+      await pending;
+      ui.restore();
+    }
+  });
+}
+
+for (const staleTiming of ['before restoration', 'during the new reveal']) {
+  test(`reusable text can reopen after pagehide with stale completion ${staleTiming}`, async () => {
+    const data = await textStream('Reveal only the current operation');
+    const releases = [];
+    let gets = 0;
+    const ui = await harness('public', async (_, options) => {
+      if (options.method === 'POST') return new Promise(resolve => { releases.push(resolve); });
+      gets++;
+      return json({ status: 'ready', format: 'text', oneTime: false, expiresAt: '2099-01-01T00:00:00Z' });
+    }, { hash: `#${encodeKey(data.raw)}` });
+    let oldReveal;
+    let newReveal;
+    try {
+      await until(() => !ui.$('download-button').disabled);
+      oldReveal = ui.$('download-button').dispatch('click');
+      await until(() => releases.length === 1);
+      await ui.win.dispatch('pagehide');
+      assert.equal(ui.$('cancel-download').hidden, true);
+      if (staleTiming === 'before restoration') {
+        releases[0](new Response(data.body));
+        await oldReveal;
+      }
+      await ui.win.dispatch('pageshow', { persisted: true });
+      assert.equal(ui.$('revealed-text').value, '');
+      assert.equal(ui.$('text-result').hidden, true);
+      assert.equal(ui.$('download-button').disabled, true);
+      location.hash = `#${encodeKey(data.raw)}`;
+      await ui.win.dispatch('hashchange');
+      assert.equal(location.hash, '');
+      await until(() => !ui.$('download-button').disabled);
+      assert.equal(gets, 2);
+      newReveal = ui.$('download-button').dispatch('click');
+      await until(() => releases.length === 2);
+      if (staleTiming === 'during the new reveal') {
+        releases[0](new Response(data.body));
+        await oldReveal;
+        assert.equal(ui.$('download-button').disabled, true, 'stale finally must not clear the new busy state');
+        assert.equal(ui.$('cancel-download').hidden, false);
+        assert.equal(ui.$('download-status').textContent, 'Decrypting secret…');
+        assert.equal(ui.$('revealed-text').value, '');
+        assert.equal(ui.$('text-result').hidden, true);
+      }
+      releases[1](new Response(data.body));
+      await newReveal;
+      assert.equal(ui.$('revealed-text').value, 'Reveal only the current operation');
+      assert.equal(ui.$('text-result').hidden, false);
+      assert.equal(ui.$('download-button').disabled, false);
+      assert.equal(ui.$('cancel-download').hidden, true);
+    } finally {
+      for (const release of releases) release(new Response(data.body));
+      await Promise.all([oldReveal, newReveal]);
+      ui.restore();
+    }
+  });
+}
+
+for (const staleTiming of ['before restoration', 'after restoration']) {
+  test(`admin auth reloads on BFCache restoration when the stale response settles ${staleTiming}`, async () => {
+    const releases = [];
+    const config = { initialized: true, username: 'admin-é', labelKey, publicOrigin: 'https://vault.example' };
+    const ui = await harness('admin', async path => {
+      if (path === '/admin/api/auth') return new Promise(resolve => { releases.push(resolve); });
+      if (path.endsWith('/config')) return json({ publicOrigin: 'https://vault.example', labelKey });
+      return json({ packages: [] });
+    }, { auth: false, waitForAuth: false });
+    try {
+      assert.equal(releases.length, 1);
+      assert.equal(ui.$('login-button').disabled, true);
+      await ui.win.dispatch('pagehide');
+      if (staleTiming === 'before restoration') {
+        releases[0](json({ ...config, username: 'stale-user' }));
+        await tick();
+      }
+      await ui.win.dispatch('pageshow', { persisted: true });
+      assert.equal(releases.length, 2, 'restore must start a fresh configuration request');
+      if (staleTiming === 'after restoration') {
+        releases[0](json({ ...config, username: 'stale-user' }));
+        await tick();
+      }
+      assert.equal(ui.$('login-button').disabled, true, 'old finally must not release the new load');
+      assert.equal(ui.$('login-status').textContent, 'Loading sign-in settings…');
+      assert.notEqual(ui.$('username').value, 'stale-user');
+      ui.$('password').value = adminPassword;
+      await ui.$('login-form').dispatch('submit');
+      assert.equal(ui.$('workspace').hidden, true);
+      releases[1](json(config));
+      await until(() => !ui.$('login-button').disabled);
+      assert.equal(ui.$('username').value, 'admin-é');
+      await ui.$('login-form').dispatch('submit');
+      assert.equal(ui.$('workspace').hidden, false);
+      await ui.win.dispatch('pagehide');
+    } finally {
+      for (const release of releases) release(json(config));
+      await tick();
+      ui.restore();
+    }
+  });
+}
 
 test('leaving while text arrives cannot restore plaintext or copy controls afterward', async () => {
   const data = await textStream('Never restore this text');

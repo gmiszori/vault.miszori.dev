@@ -6,6 +6,7 @@ import { validateAuthConfig, deriveAdminKeys, adminAuthorization } from './auth.
 const $ = id => document.getElementById(id);
 let authConfig;
 let authLoading = false;
+let authLoadAttempt = 0;
 let nameKey = null;
 let nameEpoch = 0;
 let auditPackages = [];
@@ -144,6 +145,7 @@ function showLoginMode() {
 async function loadAuth() {
   if (authLoading) return;
   authLoading = true;
+  const attempt = ++authLoadAttempt;
   const session = loginAttempt;
   $('login-button').disabled = true;
   message('login-status', 'Loading sign-in settings…');
@@ -151,15 +153,17 @@ async function loadAuth() {
     const response = await fetch('/admin/api/auth', { credentials: 'omit', cache: 'no-store', redirect: 'error', referrerPolicy: 'no-referrer', signal: AbortSignal.timeout(30000) });
     if (!response.ok) { await response.body?.cancel(); throw new Error('Could not load sign-in settings. Check the VPN and reload this page.'); }
     const config = validateAuthConfig(await response.json());
-    if (session !== loginAttempt) return;
+    if (attempt !== authLoadAttempt || session !== loginAttempt) return;
     authConfig = config;
     showLoginMode();
     message('login-status', '');
   } catch (error) {
-    if (session === loginAttempt) message('login-status', error.message || 'Could not load sign-in settings. Reload to try again.', true);
+    if (attempt === authLoadAttempt && session === loginAttempt) message('login-status', error.message || 'Could not load sign-in settings. Reload to try again.', true);
   } finally {
-    authLoading = false;
-    $('login-button').disabled = !authConfig || !window.isSecureContext || !crypto.subtle;
+    if (attempt === authLoadAttempt) {
+      authLoading = false;
+      $('login-button').disabled = !authConfig || !window.isSecureContext || !crypto.subtle;
+    }
   }
 }
 
@@ -371,7 +375,6 @@ async function upload() {
       sentBytes = validated.bytes;
       await send(validated.text);
       validated.text.fill(0);
-      $('package-text').value = '';
     }
     for (const file of format === 'files' ? selected : []) {
       for (let offset = 0; offset < file.size; offset += CHUNK_SIZE) {
@@ -396,6 +399,7 @@ async function upload() {
     $('result-panel').hidden = false;
     message('upload-status', 'Encrypted, uploaded, and ready. Copy the share link below.');
     selected = [];
+    if (format === 'text') $('package-text').value = '';
     completed = true;
     $('copy-link').focus();
   } catch (error) {
@@ -745,7 +749,14 @@ window.addEventListener('drop', event => event.preventDefault());
 window.addEventListener('beforeunload', event => {
   if (uploading || !$('result-panel').hidden) { event.preventDefault(); event.returnValue = ''; }
 });
-window.addEventListener('pagehide', () => clearSession());
+window.addEventListener('pagehide', () => {
+  ++authLoadAttempt;
+  authLoading = false;
+  clearSession();
+});
+window.addEventListener('pageshow', event => {
+  if (event.persisted && window.isSecureContext && crypto.subtle) void loadAuth();
+});
 if (!window.isSecureContext || !crypto.subtle) {
   $('crypto-warning').hidden = false;
   $('login-button').disabled = true;

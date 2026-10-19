@@ -8,6 +8,7 @@ services:
       PUBLIC_LISTEN_ADDR: 172.30.0.2:8080
       ADMIN_LISTEN_ADDR: 172.30.0.130:8081
       ADMIN_PROXY_IP: 172.30.0.131
+      TRUSTED_PROXY_CIDR: ${TRUSTED_PROXY_CIDR:-172.30.0.0/24}
       ADMIN_USER: ${ADMIN_USER:-admin}
       ADMIN_SETUP_TOKEN: ${ADMIN_SETUP_TOKEN:-}
       PUBLIC_ORIGIN: https://${DOMAIN:-vault.miszori.dev}
@@ -78,28 +79,58 @@ services:
       driver: json-file
       options: {max-size: "10m", max-file: "3"}
 
+  wireguard:
+    build: ./wireguard
+    restart: unless-stopped
+    environment:
+      WIREGUARD_ENDPOINT: ${WIREGUARD_ENDPOINT:-${DOMAIN:-vault.miszori.dev}}
+      WIREGUARD_PORT: ${WIREGUARD_PORT:-51821}
+      WIREGUARD_PEERS: ${WIREGUARD_PEERS:-admin}
+      WIREGUARD_SUBNET: ${WIREGUARD_SUBNET:-10.13.13.0/24}
+      VPN_BIND_IP: ${VPN_BIND_IP:-10.13.13.1}
+    ports:
+      - "${PUBLIC_BIND_IP:?Set the host public-facing interface IP}:${WIREGUARD_PORT:-51821}:51820/udp"
+    volumes:
+      - wireguard_config:/config
+    networks:
+      vpn_ingress:
+      vpn_backend:
+        ipv4_address: 172.30.0.131
+    read_only: true
+    tmpfs:
+      - /tmp:size=16m,noexec,nosuid
+    cap_drop: [ALL]
+    cap_add: [NET_ADMIN]
+    security_opt: [no-new-privileges:true]
+    pids_limit: 100
+    mem_limit: 64m
+    ulimits:
+      core: 0
+      nofile: {soft: 2048, hard: 2048}
+    logging:
+      driver: json-file
+      options: {max-size: "10m", max-file: "3"}
+
   caddy-vpn:
     image: caddy:2.11-alpine@sha256:d8542f48d34a9cf4e4c11a478865229840e87e4c96ea3f439101f31a5d35f75f
     restart: unless-stopped
     environment:
-      VPN_BIND_IP: ${VPN_BIND_IP:-10.0.0.1}
+      VPN_BIND_IP: ${VPN_BIND_IP:-10.13.13.1}
       PUBLIC_ORIGIN: https://${DOMAIN:-vault.miszori.dev}
       API_UPSTREAM: 172.30.0.130:8081
-    ports:
-      - "${VPN_BIND_IP:-10.0.0.1}:80:8081"
-      - "${VPN_BIND_IP:-10.0.0.1}:443:8443"
+    network_mode: service:wireguard
     volumes:
       - ./Caddyfile.vpn:/etc/caddy/Caddyfile:ro
       - ./Caddyfile.common:/etc/caddy/common.caddy:ro
       - ./web:/srv:ro
       - caddy_vpn_data:/data
       - caddy_vpn_config:/config
-    networks:
-      vpn_backend:
-        ipv4_address: 172.30.0.131
     depends_on:
       api:
         condition: service_healthy
+      wireguard:
+        condition: service_healthy
+        restart: true
     read_only: true
     tmpfs:
       - /tmp:size=16m,noexec,nosuid
@@ -121,9 +152,11 @@ volumes:
   caddy_config:
   caddy_vpn_data:
   caddy_vpn_config:
+  wireguard_config:
 
 networks:
   edge:
+  vpn_ingress:
   backend:
     internal: true
     ipam:

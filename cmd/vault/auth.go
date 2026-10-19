@@ -62,12 +62,12 @@ func sameOrigin(r *http.Request) bool {
 func (s *Server) authThrottled(r *http.Request) bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	b := s.limits["auth:"+peerIP(r)]
+	b := s.limits["auth:"+s.peerIP(r)]
 	return s.now().Sub(b.start) < time.Minute && b.count >= 20
 }
 
 func (s *Server) authFailure(w http.ResponseWriter, r *http.Request, code int, message string) {
-	if !s.gate.allowAuthFailure(s.now()) || !s.allowed("auth:"+peerIP(r), 20) {
+	if !s.gate.allowAuthFailure(s.now()) || !s.allowed("auth:"+s.peerIP(r), 20) {
 		fail(w, 429, "Too many attempts")
 		return
 	}
@@ -145,7 +145,7 @@ func (s *Server) setup(w http.ResponseWriter, r *http.Request) {
 	}
 	if !decode(w, r, &req) {
 		s.gate.allowAuthFailure(s.now())
-		s.allowed("auth:"+peerIP(r), 20)
+		s.allowed("auth:"+s.peerIP(r), 20)
 		return
 	}
 	if req.SetupToken == "" || !canonicalBase64(req.Authentication, 32, 32) {

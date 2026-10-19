@@ -140,9 +140,10 @@ export function parseTextManifest(bytes) {
 }
 
 export class FramedReader {
-  constructor(stream) {
+  constructor(stream, onProgress) {
     if (!stream) throw new Error('This browser did not provide a download stream.');
     this.reader = stream.getReader();
+    this.onProgress = onProgress;
     this.buffer = new Uint8Array(0);
     this.offset = 0;
   }
@@ -165,6 +166,7 @@ export class FramedReader {
       result.set(this.buffer.subarray(this.offset, this.offset + take), written);
       this.offset += take;
       written += take;
+      this.onProgress?.(take);
     }
     return result;
   }
