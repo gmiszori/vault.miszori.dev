@@ -124,6 +124,9 @@ test('real WireGuard tunnel reaches admin HTTPS but cannot forward to the backen
       }));
     docker('cp', `${vpn}:/data/caddy/pki/authorities/local/root.crt`, join(dir, 'vpn-root.crt'));
     docker('cp', `${pub}:/data/caddy/pki/authorities/local/root.crt`, join(dir, 'public-root.crt'));
+    // These are public trust certificates, not CA private keys or peer credentials.
+    await chmod(join(dir, 'vpn-root.crt'), 0o644);
+    await chmod(join(dir, 'public-root.crt'), 0o644);
     let admin;
     for (let attempt = 0; attempt < 30; attempt++) {
       admin = probe('https://10.13.13.1/admin');
