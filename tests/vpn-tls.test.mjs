@@ -44,39 +44,57 @@ test('production VPN IP serves admin while public listeners abort IP and unknown
   const image = /image: (caddy:[^\s]+)/.exec(compose)[1];
   const dir = await mkdtemp(join(tmpdir(), 'vault-vpn-tls-'));
   const name = `vault-vpn-tls-${process.pid}`;
-  let started = false;
+  const vpnName = `${name}-private`;
+  const started = [];
   try {
-    const adapted = JSON.parse(docker('run', '--rm',
-      '-e', 'DOMAIN=vault.example', '-e', 'VPN_BIND_IP=10.0.0.1',
-      '-e', 'ACME_EMAIL=test@example.com', '-e', 'PUBLIC_ORIGIN=https://vault.example',
-      '-v', `${join(root, 'Caddyfile')}:/etc/caddy/Caddyfile:ro`,
-      image, 'caddy', 'adapt', '--config', '/etc/caddy/Caddyfile', '--adapter', 'caddyfile'));
-    const policies = adapted.apps.tls.automation.policies;
-    const vpnPolicy = policies.find(policy => policy.subjects?.includes('10.0.0.1'));
-    assert.equal(vpnPolicy.issuers[0].module, 'internal');
-    assert.ok(!policies.find(policy => policy.subjects?.includes('vault.example'))?.issuers?.some(issuer => issuer.module === 'internal'));
-    // Only the public certificate issuer is substituted for this isolated smoke test.
-    // The private-IP policy and production routes remain unchanged; no real ACME requests run.
-    for (const policy of policies) policy.issuers = [{ module: 'internal' }];
-    await writeFile(join(dir, 'caddy.json'), JSON.stringify(adapted));
-    docker('run', '--rm', '-v', `${dir}:/test:ro`, image, 'caddy', 'validate', '--config', '/test/caddy.json');
-    docker('run', '-d', '--name', name,
-      '-p', '127.0.0.1::80', '-p', '127.0.0.1::443', '-p', '127.0.0.1::8443', '-p', '127.0.0.1::8081',
-      '-v', `${dir}:/test:ro`, '-v', `${join(root, 'web')}:/srv:ro`,
-      image, 'caddy', 'run', '--config', '/test/caddy.json');
-    started = true;
+    for (const [container, config, expectedPorts] of [
+      [name, 'Caddyfile', [80, 443]],
+      [vpnName, 'Caddyfile.vpn', [8081, 8443]],
+    ]) {
+      const adapted = JSON.parse(docker('run', '--rm',
+        '-e', 'DOMAIN=vault.example', '-e', 'VPN_BIND_IP=10.0.0.1',
+        '-e', 'ACME_EMAIL=test@example.com', '-e', 'PUBLIC_ORIGIN=https://vault.example',
+        '-v', `${join(root, config)}:/etc/caddy/Caddyfile:ro`,
+        '-v', `${join(root, 'Caddyfile.common')}:/etc/caddy/common.caddy:ro`,
+        image, 'caddy', 'adapt', '--config', '/etc/caddy/Caddyfile', '--adapter', 'caddyfile'));
+      const listeners = Object.values(adapted.apps.http.servers).flatMap(server => server.listen).sort();
+      assert.deepEqual(listeners, expectedPorts.map(port => `:${port}`).sort());
+      const policies = adapted.apps.tls.automation.policies;
+      if (container === vpnName) {
+        const vpnPolicy = policies.find(policy => policy.subjects?.includes('10.0.0.1'));
+        assert.equal(vpnPolicy.issuers[0].module, 'internal');
+        assert.ok(!policies.some(policy => policy.subjects?.includes('vault.example')));
+      } else {
+        assert.ok(!policies.some(policy => policy.subjects?.includes('10.0.0.1')));
+        assert.ok(!policies.find(policy => policy.subjects?.includes('vault.example'))?.issuers?.some(issuer => issuer.module === 'internal'));
+        // Substitute only public issuance; production VPN policy and all routes stay unchanged.
+        for (const policy of policies) policy.issuers = [{ module: 'internal' }];
+      }
+      await writeFile(join(dir, `${container}.json`), JSON.stringify(adapted));
+      docker('run', '--rm', '-v', `${dir}:/test:ro`, image, 'caddy', 'validate', '--config', `/test/${container}.json`);
+      docker('run', '-d', '--name', container,
+        ...expectedPorts.flatMap(port => ['-p', `127.0.0.1::${port}`]),
+        '-v', `${dir}:/test:ro`, '-v', `${join(root, 'web')}:/srv:ro`,
+        image, 'caddy', 'run', '--config', `/test/${container}.json`);
+      started.push(container);
+    }
     const ports = JSON.parse(docker('inspect', '--format', '{{json .NetworkSettings.Ports}}', name));
+    const vpnPorts = JSON.parse(docker('inspect', '--format', '{{json .NetworkSettings.Ports}}', vpnName));
     const publicPlainPort = Number(ports['80/tcp'][0].HostPort);
     const publicPort = Number(ports['443/tcp'][0].HostPort);
-    const vpnPort = Number(ports['8443/tcp'][0].HostPort);
-    const httpPort = Number(ports['8081/tcp'][0].HostPort);
+    const vpnPort = Number(vpnPorts['8443/tcp'][0].HostPort);
+    const httpPort = Number(vpnPorts['8081/tcp'][0].HostPort);
     let ca;
+    let vpnCA;
     let admin;
     for (let attempt = 0; attempt < 60; attempt++) {
       try {
         docker('cp', `${name}:/data/caddy/pki/authorities/local/root.crt`, join(dir, 'root.crt'));
         ca = await readFile(join(dir, 'root.crt'));
-        admin = await request(vpnPort, '/admin', '10.0.0.1', ca, false);
+        docker('cp', `${vpnName}:/data/caddy/pki/authorities/local/root.crt`, join(dir, 'vpn-root.crt'));
+        vpnCA = await readFile(join(dir, 'vpn-root.crt'));
+        admin = await request(vpnPort, '/admin', '10.0.0.1', vpnCA, false);
+        await request(publicPort, '/public.js', 'vault.example', ca);
         break;
       } catch (error) {
         if (attempt === 59) throw error;
@@ -85,7 +103,9 @@ test('production VPN IP serves admin while public listeners abort IP and unknown
     }
     assert.equal(admin.status, 200);
     assert.match(admin.body, /id="login-form"/);
-    assert.equal((await request(vpnPort, '/admin.js', '10.0.0.1', ca, false)).status, 200);
+    assert.notDeepEqual(ca, vpnCA, 'public and private proxies must not share a certificate authority');
+    await assert.rejects(request(vpnPort, '/admin', '10.0.0.1', ca, false));
+    assert.equal((await request(vpnPort, '/admin.js', '10.0.0.1', vpnCA, false)).status, 200);
     for (const path of ['/admin', '/admin/api/packages', '/api/admin/packages', '/admin.js']) {
       assert.equal((await request(publicPort, path, 'vault.example', ca)).status, 404);
     }
@@ -98,8 +118,8 @@ test('production VPN IP serves admin while public listeners abort IP and unknown
     assert.equal(packagePage.status, 200);
     assert.match(packagePage.body, /Checking package availability/);
     assert.equal((await request(publicPort, '/public.js', 'vault.example', ca)).status, 200);
-    for (const [port, host, sni] of [[publicPort, 'vault.example', true], [vpnPort, '10.0.0.1', false]]) {
-      const icon = await request(port, '/share-icon.png', host, ca, sni);
+    for (const [port, host, cert, sni] of [[publicPort, 'vault.example', ca, true], [vpnPort, '10.0.0.1', vpnCA, false]]) {
+      const icon = await request(port, '/share-icon.png', host, cert, sni);
       assert.equal(icon.status, 404);
     }
     const publicRedirect = await plainRequest(publicPlainPort, '/package/example', 'vault.example');
@@ -111,9 +131,9 @@ test('production VPN IP serves admin while public listeners abort IP and unknown
         await assert.rejects(request(publicPort, path, 'vault.example', ca, true, host), { code: 'ECONNRESET' });
       }
     }
-    await assert.rejects(request(publicPort, '/admin', '10.0.0.1', ca, false), { code: 'ECONNRESET' });
+    await assert.rejects(request(publicPort, '/admin', '10.0.0.1', ca, false), error => ['ECONNRESET', 'EPROTO'].includes(error.code));
   } finally {
-    if (started) docker('rm', '-f', '-v', name);
+    for (const container of started.reverse()) docker('rm', '-f', '-v', container);
     await rm(dir, { recursive: true, force: true });
   }
 });

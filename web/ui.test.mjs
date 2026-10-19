@@ -793,7 +793,7 @@ test('deployment and module defaults consistently use the vault namespace', asyn
   const go = await readFile(new URL('../go.mod', import.meta.url), 'utf8');
   const pkg = JSON.parse(await readFile(new URL('../package.json', import.meta.url), 'utf8'));
   assert.match(compose, /^name: vault-miszori-dev\n/);
-  assert.equal((compose.match(/https:\/\/\$\{DOMAIN:-vault\.miszori\.dev\}/g) || []).length, 2);
+  assert.equal((compose.match(/https:\/\/\$\{DOMAIN:-vault\.miszori\.dev\}/g) || []).length, 3);
   assert.match(env, /^DOMAIN=vault\.miszori\.dev\n/);
   assert.match(go, /^module vault\.miszori\.dev\n/);
   assert.equal(pkg.name, 'vault.miszori.dev');
@@ -886,7 +886,7 @@ test('mobile audit overflow stays inside its scroller, including positioned acce
 });
 
 test('production and test roots consistently redirect to the personal site', async () => {
-  for (const [file, count] of [['../Caddyfile', 4], ['../tests/Caddyfile', 2]]) {
+  for (const [file, count] of [['../Caddyfile', 2], ['../Caddyfile.vpn', 2], ['../tests/Caddyfile', 2]]) {
     const config = await readFile(new URL(file, import.meta.url), 'utf8');
     const roots = [...config.matchAll(/handle \/ \{([^}]+)\}/g)];
     assert.equal(roots.length, count);
@@ -896,7 +896,9 @@ test('production and test roots consistently redirect to the personal site', asy
 });
 
 test('VPN admin uses a local IP certificate and redirects to the IP without changing the public origin', async () => {
-  const config = await readFile(new URL('../Caddyfile', import.meta.url), 'utf8');
+  const config = await readFile(new URL('../Caddyfile.vpn', import.meta.url), 'utf8');
+  const publicConfig = await readFile(new URL('../Caddyfile', import.meta.url), 'utf8');
+  assert.doesNotMatch(publicConfig, /VPN_BIND_IP|tls internal|:8443|:8081/);
   const compose = await readFile(new URL('../compose.yaml', import.meta.url), 'utf8');
   assert.match(config, /default_sni \{\$VPN_BIND_IP:10\.0\.0\.1\}/);
   assert.match(config, /https:\/\/\{\$VPN_BIND_IP:10\.0\.0\.1\}:8443 \{\s*tls internal/);

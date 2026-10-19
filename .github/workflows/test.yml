@@ -30,8 +30,11 @@ jobs:
           govulncheck ./...
       - name: Browser protocol and archive tests
         run: node --test web/*.test.mjs
-      - name: Validate production proxy
-        run: docker run --rm -e DOMAIN=vault.miszori.dev -e ACME_EMAIL=test@example.com -v "$PWD/Caddyfile:/etc/caddy/Caddyfile:ro" caddy:2.11-alpine@sha256:d8542f48d34a9cf4e4c11a478865229840e87e4c96ea3f439101f31a5d35f75f caddy validate --config /etc/caddy/Caddyfile --adapter caddyfile
+      - name: Validate production proxies
+        run: |
+          for config in Caddyfile Caddyfile.vpn; do
+            docker run --rm -e DOMAIN=vault.miszori.dev -e ACME_EMAIL=test@example.com -v "$PWD/$config:/etc/caddy/Caddyfile:ro" -v "$PWD/Caddyfile.common:/etc/caddy/common.caddy:ro" caddy:2.11-alpine@sha256:d8542f48d34a9cf4e4c11a478865229840e87e4c96ea3f439101f31a5d35f75f caddy validate --config /etc/caddy/Caddyfile --adapter caddyfile
+          done
       - name: Start integration stack
         run: docker compose -p vault-test -f tests/compose.yaml up --build -d --wait
       - name: Scan the exact production Go binary

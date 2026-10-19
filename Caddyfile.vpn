@@ -1,0 +1,75 @@
+{
+	admin off
+	auto_https disable_redirects
+	default_sni {$VPN_BIND_IP:10.0.0.1}
+	log {
+		format filter {
+			wrap json
+			fields {
+				request>headers>X-Claim-Token delete
+				request>headers>X-Upload-Token delete
+				request>headers>Authorization delete
+				request>headers>Cookie delete
+			}
+		}
+	}
+	servers {
+		protocols h1 h2
+		max_header_size 16KB
+		timeouts {
+			read_header 10s
+			idle 1m
+		}
+	}
+}
+
+import /etc/caddy/common.caddy
+
+:8081 {
+	handle / {
+		redir https://gergo.miszori.dev 302
+	}
+	handle {
+		redir https://{$VPN_BIND_IP:10.0.0.1}{uri} 308
+	}
+}
+
+https://{$VPN_BIND_IP:10.0.0.1}:8443 {
+	tls internal
+	import common_headers
+	root * /srv
+	handle / {
+		redir https://gergo.miszori.dev 302
+	}
+	handle /local-download/* {
+		respond "" 404
+	}
+	handle /admin/api/* {
+		uri replace /admin/api/ /api/admin/ 1
+		import proxy_api
+	}
+	@direct_admin path /api/admin /api/admin/*
+	handle @direct_admin {
+		respond "Not found" 404
+	}
+	handle /api/* {
+		import proxy_api
+	}
+	@admin_page path /admin /admin/
+	handle @admin_page {
+		rewrite * /admin.html
+		file_server
+	}
+	handle /package/* {
+		rewrite * /index.html
+		templates
+		file_server
+	}
+	@assets path /styles.css /admin.js /public.js /crypto.js /zip.js /names.js /auth.js /download.js /download-worker.js /share-preview.png /favicon.svg
+	handle @assets {
+		file_server
+	}
+	handle {
+		respond "Not found" 404
+	}
+}

@@ -14,7 +14,7 @@ Private, client-encrypted file and plain-text packages with one-time or expiry-b
 
 ## How the code works
 
-1. [Caddyfile](./Caddyfile) serves the static pages over HTTPS and routes API requests to Go. Public visitors can only reach delivery routes; admin routes are restricted to the VPN listener. [compose.yaml](./compose.yaml) runs both services and preserves data in Docker volumes.
+1. [Caddyfile](./Caddyfile) serves public delivery routes; [Caddyfile.vpn](./Caddyfile.vpn) serves VPN-only administration in a separate Caddy container. Both import security headers and API proxy settings from [Caddyfile.common](./Caddyfile.common). [compose.yaml](./compose.yaml) runs the Go API and both proxies with persistent Docker volumes.
 2. [web/admin.js](./web/admin.js) handles login, file/folder or secret selection, expiration, and uploads. [web/crypto.js](./web/crypto.js) generates a random package key and encrypts content in the browser before sending it. The share link keeps the decryption key after `#`, which browsers do not send in HTTP requests.
 3. [cmd/vault/main.go](./cmd/vault/main.go) stores ciphertext and package metadata, checks authorization and expiration, and manages deletion. [retrievals.go](./cmd/vault/retrievals.go) records retrieval start times, IP addresses, and reported browser/device details. The server never receives the package decryption key or plaintext contents.
 4. [web/public.js](./web/public.js) validates the link and waits for the recipient's download/reveal action. It proves possession of the key, receives ciphertext, and decrypts locally. File packages become streaming ZIP downloads; secrets appear in a copyable box. One-time access destroys the stored package; reusable access leaves it available until expiration or admin deletion.
@@ -32,7 +32,31 @@ The admin interface is **not publicly reachable**, even with a correct password.
 
 Connect to the VPN and open **https://10.0.0.1/admin**. No DNS or hosts-file changes are needed. Caddy issues and renews a certificate for `VPN_BIND_IP` using its internal certificate authority (`tls internal`); public CAs cannot issue certificates for this private IP. The public domain retains its publicly trusted certificate and explicitly returns 404 for admin pages, assets, and API paths. Share links still use the public domain. Caddy internally uses port 8443 for VPN HTTPS; users still use ordinary HTTPS port 443.
 
-The admin certificate will show a browser trust warning unless you install Caddy's root CA on your device. A browser may allow an explicit exception, but some browsers/policies prohibit bypasses or restrict WebCrypto/Service Workers even afterward. If encryption is unavailable, install the root CA from a trusted source; do not disable the application's secure-context checks. Verify the certificate through a trusted channel before accepting it: bypassing a warning without verification does not authenticate the server. The CA and certificates persist in the existing `caddy_data` volume. Never distribute the CA private key.
+The admin certificate will show a browser trust warning unless you install the VPN Caddy's root CA on your device. A browser may allow an explicit exception, but some browsers/policies prohibit bypasses or restrict WebCrypto/Service Workers even afterward. If encryption is unavailable, install the root CA from a trusted source; do not disable the application's secure-context checks. Verify the certificate through a trusted channel before accepting it: bypassing a warning without verification does not authenticate the server. The VPN CA and certificates persist only in `caddy_vpn_data`; public ACME state stays in `caddy_data`. Never distribute the CA private key. Export only the VPN root certificate with:
+
+```sh
+docker compose cp caddy-vpn:/data/caddy/pki/authorities/local/root.crt ./vpn-root.crt
+```
+
+The `caddy` service publishes only public-interface ports and joins `edge` plus `backend`. The `caddy-vpn` service publishes only VPN-interface ports, joins only the internal `vpn_backend` network, and has no Internet egress or shared writable state with public Caddy. The API joins both internal networks; it remains a shared backend, so this is defense in depth, not isolation of the API itself. A compromised public proxy can still contact the API directly, where admin authentication remains required. The read-only web assets and common proxy snippets are shared; VPN configuration, CA keys, and writable volumes are not mounted in the public proxy.
+
+### Upgrading from a single Caddy container
+
+The backend subnet is split into two non-overlapping networks within the API's existing trusted-proxy range, `172.30.0.0/24`. Recreate the networks during a maintenance window:
+
+```sh
+docker compose down
+# Do not add -v: retain packages, enrollment, and public certificates.
+docker compose up -d --build --wait
+```
+
+The new VPN volume generates a **new CA**. Verify and install its root certificate on admin devices, and remove trust for the previous local CA. Do not copy the old CA into the new volume: the old public Caddy previously had access to its private key. After the split, remove the obsolete local CA and private-IP certificates from public Caddy's retained volume (not its public ACME certificates):
+
+```sh
+docker compose exec caddy sh -c 'rm -rf /data/caddy/pki/authorities/local /data/caddy/certificates/local'
+```
+
+Keep `PUBLIC_BIND_IP` and `VPN_BIND_IP` distinct, specific interface addresses; never use wildcard bindings. Keep the VPN interface available before starting Compose. Interface binding and Docker network separation do not replace host firewall rules: allow VPN ports only through the VPN interface and ensure Docker forwarding rules cannot expose them from public networks.
 
 HTTPS is mandatory: browser WebCrypto does not work on plain HTTP VPN addresses. VPN HTTP redirects non-root paths to the VPN IP over HTTPS, rather than serving an insecure encryption page. Do not put a CDN or external reverse proxy in front without redesigning the IP/audit and trust boundaries.
 
@@ -68,7 +92,7 @@ docker compose up --build -d --wait
 docker compose logs --tail=30 api caddy
 ```
 
-Caddy obtains/renews the public domain's certificate automatically using public DNS and inbound ACME access. The VPN IP certificate is issued locally by Caddy and needs neither DNS changes nor a Cloudflare API token. Deployment will fail to bind if the VPN address is not present. The backend network uses `172.30.0.0/24`; ensure it does not overlap existing networks. Only Caddy and the API should join it.
+Caddy obtains/renews the public domain's certificate automatically using public DNS and inbound ACME access. The VPN IP certificate is issued locally by Caddy and needs neither DNS changes nor a Cloudflare API token. Deployment will fail to bind if the VPN address is not present. The internal networks use `172.30.0.0/25` (public proxy/API) and `172.30.0.128/25` (VPN proxy/API); ensure neither overlaps existing networks. Only the corresponding proxy and the API should join each network.
 
 5. On each admin device, connect to WireGuard with a route covering `10.0.0.1`, then visit **https://10.0.0.1/admin**. Verify and accept the local certificate warning if your browser permits it, or install the Caddy root CA as described above. Remove any previous hosts-file override mapping `vault.miszori.dev` to `10.0.0.1`; public package links should use normal public DNS. For the branding transition, use the fresh project and enrollment described above. Subsequent updates within the vault namespace preserve enrolled credentials and encrypted names when the project and named volumes are retained. On first use, enter the setup token and choose/confirm a **different strong admin password** (16–1,024 Unicode characters). Username defaults to `admin`. The password is never sent to the server: the browser derives independent authentication and name-encryption keys. Later sign-ins use only that password and automatically unlock package names. The one-time token cannot replace or reset an enrolled password; remove `ADMIN_SETUP_TOKEN` from `.env` after enrollment if desired. Keep the data volume, including `auth.json` and `label-salt`.
 
