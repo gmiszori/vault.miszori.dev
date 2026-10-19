@@ -42,6 +42,12 @@ function plainRequest(port, path, host) {
 test('production VPN IP serves admin while public listeners abort IP and unknown-host requests', { timeout: 90000 }, async () => {
   const compose = await readFile(join(root, 'compose.yaml'), 'utf8');
   const image = /image: (caddy:[^\s]+)/.exec(compose)[1];
+  const { services } = JSON.parse(execFileSync('docker', [
+    'compose', '--env-file', '/dev/null', '-f', join(root, 'compose.yaml'), 'config', '--format', 'json',
+  ], {
+    encoding: 'utf8', timeout: 60000,
+    env: { ...process.env, ACME_EMAIL: 'test@example.com', PUBLIC_BIND_IP: '192.0.2.10' },
+  }));
   const dir = await mkdtemp(join(tmpdir(), 'vault-vpn-tls-'));
   const name = `vault-vpn-tls-${process.pid}`;
   const vpnName = `${name}-private`;
@@ -72,11 +78,24 @@ test('production VPN IP serves admin while public listeners abort IP and unknown
       }
       await writeFile(join(dir, `${container}.json`), JSON.stringify(adapted));
       docker('run', '--rm', '-v', `${dir}:/test:ro`, image, 'caddy', 'validate', '--config', `/test/${container}.json`);
+      const service = services[container === vpnName ? 'caddy-vpn' : 'caddy'];
+      assert.equal(service.read_only, true);
+      assert.deepEqual(service.cap_drop, ['ALL']);
+      assert.ok(service.security_opt.includes('no-new-privileges:true'));
       docker('run', '-d', '--name', container,
+        '--read-only', '-v', '/data', '-v', '/config',
+        ...service.tmpfs.flatMap(mount => ['--tmpfs', mount]),
+        ...service.cap_drop.flatMap(capability => ['--cap-drop', capability]),
+        ...(service.cap_add || []).flatMap(capability => ['--cap-add', capability]),
+        ...service.security_opt.flatMap(option => ['--security-opt', option]),
         ...expectedPorts.flatMap(port => ['-p', `127.0.0.1::${port}`]),
         '-v', `${dir}:/test:ro`, '-v', `${join(root, 'web')}:/srv:ro`,
         image, 'caddy', 'run', '--config', `/test/${container}.json`);
       started.push(container);
+    }
+    for (const container of started) {
+      assert.equal(docker('inspect', '--format', '{{.State.Running}}', container), 'true',
+        `${container} failed to start: ${docker('logs', container)}`);
     }
     const ports = JSON.parse(docker('inspect', '--format', '{{json .NetworkSettings.Ports}}', name));
     const vpnPorts = JSON.parse(docker('inspect', '--format', '{{json .NetworkSettings.Ports}}', vpnName));

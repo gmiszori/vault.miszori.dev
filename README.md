@@ -32,6 +32,8 @@ The admin interface is **not publicly reachable**, even with a correct password.
 
 Connect to the VPN and open **https://10.0.0.1/admin**. No DNS or hosts-file changes are needed. Caddy issues and renews a certificate for `VPN_BIND_IP` using its internal certificate authority (`tls internal`); public CAs cannot issue certificates for this private IP. The public domain retains its publicly trusted certificate and explicitly returns 404 for admin pages, assets, and API paths. Share links still use the public domain. Caddy internally uses port 8443 for VPN HTTPS; users still use ordinary HTTPS port 443.
 
+Both Caddy services drop all capabilities except `NET_BIND_SERVICE` and retain `no-new-privileges`. The pinned Caddy binary carries the `cap_net_bind_service` file capability; dropping it from the container's capability bounding set prevents Linux from executing Caddy (`exec /usr/bin/caddy: operation not permitted`), even on the VPN proxy's high internal ports.
+
 The admin certificate will show a browser trust warning unless you install the VPN Caddy's root CA on your device. A browser may allow an explicit exception, but some browsers/policies prohibit bypasses or restrict WebCrypto/Service Workers even afterward. If encryption is unavailable, install the root CA from a trusted source; do not disable the application's secure-context checks. Verify the certificate through a trusted channel before accepting it: bypassing a warning without verification does not authenticate the server. The VPN CA and certificates persist only in `caddy_vpn_data`; public ACME state stays in `caddy_data`. Never distribute the CA private key. Export only the VPN root certificate with:
 
 ```sh
@@ -285,6 +287,9 @@ docker run --rm -v "$PWD:/src" -w /src golang:1.26-alpine \
 
 # Browser-module tests
 node --test web/*.test.mjs
+
+# Standalone production proxy startup/TLS regression, using production capability settings
+node --test tests/vpn-tls.test.mjs
 
 # Local stack; HTTP is safe for WebCrypto on loopback only
 docker compose -p vault-test -f tests/compose.yaml up --build -d --wait
