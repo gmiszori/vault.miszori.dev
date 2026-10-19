@@ -78,6 +78,14 @@ All sessions and name keys stay in tab memory and are cleared on sign-out/leavin
 
 Do not run the local test stack on a production host with this network already allocated.
 
+### Deployment behind a shared Caddy gateway
+
+The [webserver deployment repository](https://github.com/gmiszori/webserver) provides an optional Compose override; standalone deployment above remains unchanged. The gateway owns public TCP 80/443 and certificates, and forwards to this Caddy's **public-only** HTTP listener on port 8080. The original public route restrictions, streaming settings, API isolation, VPN bindings, project name, and data/CA volumes remain in place. Never forward the gateway to VPN ports 8081/8443 or to the Go API.
+
+The override sets `PUBLIC_SCHEME=http`, `PUBLIC_PORT=8080`, and `TRUSTED_PROXY_IPS` **inside the Caddy container**, not in the standalone `.env`. Caddy trusts only the gateway's fixed address on a dedicated project network; `{client_ip}` then preserves public audit/rate-limit IPs while direct VPN clients retain their socket IP. The gateway must replace incoming forwarded-IP headers. Do not broaden this trust to all private addresses or share the ingress network with unrelated applications. Leave these settings unset for standalone use. The public origin and share links remain HTTPS.
+
+For an existing vault-namespace deployment, do **not** remove volumes, change the Compose project name, or reset enrollment. Stop the old stack without `-v`, then start through the parent deployment script. Follow the parent README for migration, backups, firewall checks, and rollback. The shared gateway is the only supported upstream proxy described here; a CDN or additional proxy requires a separate trust-boundary design.
+
 ## Reusable packages and retrieval activity
 
 Choose **Availability → Available until expiry** in the upload panel to keep encrypted files available for repeated downloads. The setting is fixed at creation; existing packages and omitted API mode values remain one-time. The expiration clock still starts at creation, including upload time. The admin table identifies each mode.
