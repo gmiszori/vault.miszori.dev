@@ -285,7 +285,7 @@ function addFiles(incoming) {
 
 function setBusy(value) {
   uploading = value;
-  for (const id of ['file-input', 'folder-input', 'clear-files', 'ttl', 'custom-ttl', 'package-mode', 'package-format', 'package-text', 'logout']) $(id).disabled = value;
+  for (const id of ['file-input', 'folder-input', 'clear-files', 'ttl', 'expiry-date', 'package-mode', 'package-format', 'package-text', 'logout']) $(id).disabled = value;
   $('package-name').disabled = value || !nameKey;
   $('drop-zone').classList.toggle('disabled', value);
   $('upload-progress').hidden = !value;
@@ -309,8 +309,15 @@ async function upload() {
   try {
     if (nameKey) validateName($('package-name').value);
     validated = format === 'text' ? serializeText($('package-text').value) : serializeManifest(describeFiles(selected));
-    ttlSeconds = $('ttl').value === 'custom' ? Number($('custom-ttl').value) * 60 : Number($('ttl').value);
-    if (!Number.isSafeInteger(ttlSeconds) || ttlSeconds < 60 || ttlSeconds > 2592000 || ($('ttl').value === 'custom' && !Number.isInteger(Number($('custom-ttl').value)))) throw new Error('Choose an expiry between 1 minute and 30 days, in whole minutes.');
+    if ($('ttl').value === 'custom') {
+      const value = $('expiry-date').value;
+      const expiry = new Date(value);
+      if (!/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}$/.test(value) || !Number.isFinite(expiry.getTime()) || localDateTime(expiry) !== value) throw new Error('Choose a valid expiration date and time.');
+      ttlSeconds = Math.floor((expiry.getTime() - Date.now()) / 1000);
+    } else {
+      ttlSeconds = Number($('ttl').value);
+    }
+    if (!Number.isSafeInteger(ttlSeconds) || ttlSeconds < 60 || ttlSeconds > 2592000) throw new Error('Choose an expiry between 1 minute and 30 days from now.');
     if (validated.bytes > MAX_BYTES) throw new Error('The package exceeds 20 GiB.');
   } catch (error) {
     message('upload-status', error.message, true);
@@ -671,7 +678,20 @@ for (const id of ['file-input', 'folder-input']) $(id).addEventListener('change'
   event.target.value = '';
 });
 $('clear-files').addEventListener('click', () => { selected = []; selectionView(); message('upload-status', ''); });
-$('ttl').addEventListener('change', () => { $('custom-ttl-field').hidden = $('ttl').value !== 'custom'; });
+function localDateTime(date) {
+  const pad = value => String(value).padStart(2, '0');
+  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}T${pad(date.getHours())}:${pad(date.getMinutes())}`;
+}
+
+$('ttl').addEventListener('change', () => {
+  $('expiry-date-field').hidden = $('ttl').value !== 'custom';
+  if ($('ttl').value === 'custom') {
+    const now = Date.now();
+    $('expiry-date').min = localDateTime(new Date(Math.ceil((now + 60000) / 60000) * 60000));
+    $('expiry-date').max = localDateTime(new Date(now + 2592000000));
+    if (!$('expiry-date').value) $('expiry-date').value = localDateTime(new Date(now + 86400000));
+  }
+});
 $('package-format').addEventListener('change', () => {
   if (uploading) return;
   const text = $('package-format').value === 'text';

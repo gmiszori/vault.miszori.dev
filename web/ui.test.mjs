@@ -573,6 +573,62 @@ test('audit allows deletion only for active data while preserving historic name 
   } finally { ui.restore(); }
 });
 
+test('admin custom expiry selects a local date and minute and sends remaining seconds', async () => {
+  let created;
+  let ui;
+  ui = await signedInAdmin(adminFetcher(async (path, options) => {
+    if (path.endsWith('/packages') && options.method === 'POST') {
+      created = JSON.parse(options.body);
+      assert.equal(ui.$('expiry-date').disabled, true);
+      return new Response('Stopped after creation check', { status: 400 });
+    }
+    throw new Error(`Unexpected ${path}`);
+  }));
+  try {
+    const html = await readFile(new URL('./admin.html', import.meta.url), 'utf8');
+    assert.match(html, /id="expiry-date" type="datetime-local" step="60"/);
+    assert.doesNotMatch(html, /custom-ttl|Custom duration|Minutes \(1/);
+    ui.$('ttl').value = 'custom';
+    await ui.$('ttl').dispatch('change');
+    assert.equal(ui.$('expiry-date-field').hidden, false);
+    const expiry = new Date(ui.$('expiry-date').value).getTime();
+    assert.ok(expiry > Date.now() + 86300000 && expiry <= Date.now() + 86400000);
+    assert.ok(ui.$('expiry-date').min);
+    assert.ok(ui.$('expiry-date').max);
+    ui.$('file-input').files = [new File(['hello'], 'hello.txt')];
+    await ui.$('file-input').dispatch('change');
+    const before = Date.now();
+    await ui.$('upload-button').dispatch('click');
+    assert.equal(created.oneTime, true);
+    assert.equal(created.format, 'files');
+    assert.ok(created.ttlSeconds <= Math.floor((expiry - before) / 1000));
+    assert.ok(created.ttlSeconds >= Math.floor((expiry - Date.now()) / 1000));
+    assert.equal(ui.$('expiry-date').disabled, false);
+    ui.$('ttl').value = '86400';
+    await ui.$('ttl').dispatch('change');
+    assert.equal(ui.$('expiry-date-field').hidden, true);
+  } finally { ui.restore(); }
+});
+
+test('admin rejects missing, invalid, past, too-near and too-distant custom expirations before upload', async () => {
+  const ui = await signedInAdmin(adminFetcher(async path => { throw new Error(`Unexpected upload ${path}`); }));
+  const local = date => {
+    const pad = value => String(value).padStart(2, '0');
+    return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}T${pad(date.getHours())}:${pad(date.getMinutes())}`;
+  };
+  try {
+    ui.$('package-format').value = 'text';
+    ui.$('package-text').value = 'secret';
+    ui.$('ttl').value = 'custom';
+    for (const value of ['', 'not-a-date', '2099-02-30T12:00', '2099-01-01T12:00:30', local(new Date(Date.now() - 60000)), local(new Date(Date.now() + 30000)), local(new Date(Date.now() + 31 * 86400000))]) {
+      ui.$('expiry-date').value = value;
+      await ui.$('upload-button').dispatch('click');
+      assert.match(ui.$('upload-status').textContent, /Choose (?:a valid expiration date and time|an expiry between 1 minute and 30 days from now)/, value);
+      assert.equal(ui.$('upload-progress').hidden, true);
+    }
+  } finally { ui.restore(); }
+});
+
 test('admin validates upload paths, encrypts sequential records, finalizes and forgets credentials on signout', async () => {
   const uploads = [];
   let finalized;
