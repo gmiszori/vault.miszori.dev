@@ -29,6 +29,14 @@ test('VPN proxy has no public network or shared proxy state', () => {
   // Both disjoint networks remain within the API's existing trusted-proxy /24.
   assert.equal(config.networks.backend.ipam.config[0].subnet, '172.30.0.0/25');
   assert.equal(config.networks.vpn_backend.ipam.config[0].subnet, '172.30.0.128/25');
+  assert.equal(config.services.api.environment.PUBLIC_LISTEN_ADDR, '172.30.0.2:8080');
+  assert.equal(config.services.api.environment.ADMIN_LISTEN_ADDR, '172.30.0.130:8081');
+  assert.equal(config.services.api.environment.ADMIN_PROXY_IP, '172.30.0.131');
+  assert.equal(config.services.api.networks.backend.ipv4_address, '172.30.0.2');
+  assert.equal(config.services.api.networks.vpn_backend.ipv4_address, '172.30.0.130');
+  assert.equal(privateProxy.networks.vpn_backend.ipv4_address, '172.30.0.131');
+  assert.equal(privateProxy.environment.API_UPSTREAM, '172.30.0.130:8081');
+  assert.equal(publicProxy.environment.API_UPSTREAM, undefined);
   assert.equal(privateProxy.environment.ACME_EMAIL, undefined);
   assert.equal(publicProxy.environment.VPN_BIND_IP, undefined);
   assert.equal(privateProxy.image, publicProxy.image);

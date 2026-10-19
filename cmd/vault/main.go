@@ -676,11 +676,15 @@ func env(key, def string) string {
 	return def
 }
 func main() {
+	config, err := listenerConfigFromEnv()
+	if err != nil {
+		log.Fatal("Invalid listener configuration: ", err)
+	}
 	if len(os.Args) > 1 {
 		if len(os.Args) != 2 || os.Args[1] != "healthcheck" {
 			log.Fatal("Unknown command")
 		}
-		if err := healthCheck("http://127.0.0.1:8080/healthz"); err != nil {
+		if err := config.healthCheck(); err != nil {
 			log.Fatal(err)
 		}
 		return
@@ -699,11 +703,6 @@ func main() {
 		log.Fatal("Cannot initialize storage: ", err)
 	}
 	s.gate = newRequestGate(limits)
-	server := &http.Server{Addr: ":8080", Handler: s, ReadHeaderTimeout: 10 * time.Second, IdleTimeout: 60 * time.Second, MaxHeaderBytes: 16384}
-	listener, err := net.Listen("tcp", server.Addr)
-	if err != nil {
-		log.Fatal(err)
-	}
 	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer cancel()
 	go func() {
@@ -720,19 +719,8 @@ func main() {
 			}
 		}
 	}()
-	shutdownDone := make(chan struct{})
-	go func() {
-		defer close(shutdownDone)
-		<-ctx.Done()
-		shutdown, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-		defer cancel()
-		if err := server.Shutdown(shutdown); err != nil {
-			_ = server.Close()
-		}
-	}()
-	log.Print("Encrypted package service listening on :8080")
-	if err = server.Serve(s.gate.limitListener(listener)); err != nil && err != http.ErrServerClosed {
+	log.Printf("Encrypted package service: public %s, VPN %s", config.publicAddr, config.adminAddr)
+	if err := s.serveListeners(ctx, config); err != nil {
 		log.Fatal(err)
 	}
-	<-shutdownDone
 }

@@ -3,13 +3,20 @@ services:
     build:
       context: ..
     environment:
+      PUBLIC_LISTEN_ADDR: 172.30.0.2:8080
+      ADMIN_LISTEN_ADDR: 172.30.0.130:8081
+      ADMIN_PROXY_IP: 172.30.0.131
       ADMIN_USER: admin
       ADMIN_SETUP_TOKEN: integration-setup-token-never-deploy-1234567890
       PUBLIC_ORIGIN: http://localhost:18080
       MAX_STORAGE_BYTES: "107374182400"
     volumes:
       - test_packages:/data
-    networks: [backend]
+    networks:
+      backend:
+        ipv4_address: 172.30.0.2
+      vpn_backend:
+        ipv4_address: 172.30.0.130
     read_only: true
     cap_drop: [ALL]
     security_opt: [no-new-privileges:true]
@@ -19,9 +26,9 @@ services:
     image: caddy:2.11-alpine@sha256:d8542f48d34a9cf4e4c11a478865229840e87e4c96ea3f439101f31a5d35f75f
     environment:
       PUBLIC_ORIGIN: http://localhost:18080
+      API_UPSTREAM: 172.30.0.2:8080
     ports:
       - "127.0.0.1:18080:8080"
-      - "127.0.0.1:18081:8081"
     volumes:
       - ./Caddyfile:/etc/caddy/Caddyfile:ro
       - ../web:/srv:ro
@@ -32,10 +39,34 @@ services:
     read_only: true
     tmpfs: [/data, /config, /tmp]
     security_opt: [no-new-privileges:true]
+  caddy-vpn:
+    image: caddy:2.11-alpine@sha256:d8542f48d34a9cf4e4c11a478865229840e87e4c96ea3f439101f31a5d35f75f
+    environment:
+      PUBLIC_ORIGIN: http://localhost:18080
+      API_UPSTREAM: 172.30.0.130:8081
+    ports:
+      - "127.0.0.1:18081:8081"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - ../web:/srv:ro
+    networks:
+      vpn_backend:
+        ipv4_address: 172.30.0.131
+    depends_on:
+      api:
+        condition: service_healthy
+    read_only: true
+    tmpfs: [/data, /config, /tmp]
+    security_opt: [no-new-privileges:true]
 networks:
   backend:
     ipam:
       config:
-        - subnet: 172.30.0.0/24
+        - subnet: 172.30.0.0/25
+  vpn_backend:
+    # Test clients use host-published HTTP; Docker Desktop suppresses these on internal-only networks.
+    ipam:
+      config:
+        - subnet: 172.30.0.128/25
 volumes:
   test_packages:

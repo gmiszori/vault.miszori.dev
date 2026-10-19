@@ -5,6 +5,9 @@ services:
     build: .
     restart: unless-stopped
     environment:
+      PUBLIC_LISTEN_ADDR: 172.30.0.2:8080
+      ADMIN_LISTEN_ADDR: 172.30.0.130:8081
+      ADMIN_PROXY_IP: 172.30.0.131
       ADMIN_USER: ${ADMIN_USER:-admin}
       ADMIN_SETUP_TOKEN: ${ADMIN_SETUP_TOKEN:-}
       PUBLIC_ORIGIN: https://${DOMAIN:-vault.miszori.dev}
@@ -18,8 +21,10 @@ services:
     volumes:
       - packages:/data
     networks:
-      - backend
-      - vpn_backend
+      backend:
+        ipv4_address: 172.30.0.2
+      vpn_backend:
+        ipv4_address: 172.30.0.130
     read_only: true
     tmpfs:
       - /tmp:size=16m,noexec,nosuid
@@ -79,6 +84,7 @@ services:
     environment:
       VPN_BIND_IP: ${VPN_BIND_IP:-10.0.0.1}
       PUBLIC_ORIGIN: https://${DOMAIN:-vault.miszori.dev}
+      API_UPSTREAM: 172.30.0.130:8081
     ports:
       - "${VPN_BIND_IP:-10.0.0.1}:80:8081"
       - "${VPN_BIND_IP:-10.0.0.1}:443:8443"
@@ -89,7 +95,8 @@ services:
       - caddy_vpn_data:/data
       - caddy_vpn_config:/config
     networks:
-      - vpn_backend
+      vpn_backend:
+        ipv4_address: 172.30.0.131
     depends_on:
       api:
         condition: service_healthy

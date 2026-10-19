@@ -38,7 +38,7 @@ The admin certificate will show a browser trust warning unless you install the V
 docker compose cp caddy-vpn:/data/caddy/pki/authorities/local/root.crt ./vpn-root.crt
 ```
 
-The `caddy` service publishes only public-interface ports and joins `edge` plus `backend`. The `caddy-vpn` service publishes only VPN-interface ports, joins only the internal `vpn_backend` network, and has no Internet egress or shared writable state with public Caddy. The API joins both internal networks; it remains a shared backend, so this is defense in depth, not isolation of the API itself. A compromised public proxy can still contact the API directly, where admin authentication remains required. The read-only web assets and common proxy snippets are shared; VPN configuration, CA keys, and writable volumes are not mounted in the public proxy.
+The `caddy` service publishes only public-interface ports and joins `edge` plus `backend`. The `caddy-vpn` service publishes only VPN-interface ports, joins only the internal `vpn_backend` network, and has no Internet egress or shared writable state with public Caddy. The API joins both internal networks but binds separate listeners to fixed interface IPs: public `172.30.0.2:8080` and VPN `172.30.0.130:8081`. The public Go handler rejects every `/api/admin` route, including discovery and enrollment, even when Caddy routing is bypassed or valid admin credentials are supplied. The VPN Go handler additionally checks the actual TCP peer against the VPN proxy's fixed IP (`172.30.0.131`); forwarding headers cannot satisfy this check. Admin authentication is still required. Both listeners share one process and storage, so this is not process isolation against an API compromise. The read-only web assets and common proxy snippets are shared; VPN configuration, CA keys, and writable volumes are not mounted in the public proxy.
 
 ### Upgrading from a single Caddy container
 
@@ -55,6 +55,14 @@ The new VPN volume generates a **new CA**. Verify and install its root certifica
 ```sh
 docker compose exec caddy sh -c 'rm -rf /data/caddy/pki/authorities/local /data/caddy/certificates/local'
 ```
+
+### API listener configuration
+
+Compose fixes the API and VPN proxy IPs to enforce the interface boundary. Public Caddy targets only `172.30.0.2:8080`; VPN Caddy targets only `172.30.0.130:8081`. If changing the Docker subnets, update the static addresses, `PUBLIC_LISTEN_ADDR`, `ADMIN_LISTEN_ADDR`, `ADMIN_PROXY_IP`, both proxy upstreams, and the API's trusted-proxy range together. Do not use the multi-network `api` DNS name as an upstream: it can resolve to either interface.
+
+Outside Compose, Go defaults to `127.0.0.1:8080` (public), `127.0.0.1:8081` (admin), and admin proxy `127.0.0.1`. Wildcard or hostname listener bindings are rejected. Both listeners must bind successfully before requests are accepted; health checks require both listeners. Shutdown drains both listeners concurrently. Request/transfer admission limits remain shared; `MAX_BACKEND_CONNECTIONS` limits connections per listener so public sockets cannot consume the VPN listener's connection pool.
+
+Upgrading from the split-proxy deployment only requires `docker compose up -d --build --wait`; network recreation and another VPN CA replacement are unnecessary if the split networks and certificate volumes already exist.
 
 Keep `PUBLIC_BIND_IP` and `VPN_BIND_IP` distinct, specific interface addresses; never use wildcard bindings. Keep the VPN interface available before starting Compose. Interface binding and Docker network separation do not replace host firewall rules: allow VPN ports only through the VPN interface and ensure Docker forwarding rules cannot expose them from public networks.
 
