@@ -313,7 +313,7 @@ Limits must be positive and internally consistent: upload/download limits cannot
 
 ## Testing
 
-Go is not required on the host. Use Docker, Node 22+, and Python 3 for native ZIP interoperability checks. Python is only a test dependency, not part of the application runtime.
+Go is not required on the host. Use Docker, Node 22+, and Python 3 for native ZIP interoperability checks. Python is only a test dependency, not part of the application runtime. Tests retain production capability drops: fixture directories permit traversal on native Linux without `DAC_OVERRIDE`, while exported test peer keys remain root-owned and owner-readable only.
 
 ```bash
 # Backend unit tests/static checks inside Docker

@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
-import { mkdtemp, readFile, writeFile, rm } from 'node:fs/promises';
+import { chmod, mkdtemp, readFile, writeFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import https from 'node:https';
@@ -29,6 +29,8 @@ function publicRequest(port, ca, path, method = 'GET', headers = {}) {
 
 test('real WireGuard tunnel reaches admin HTTPS but cannot forward to the backend or publish admin TCP', { timeout: 240000 }, async () => {
   const dir = await mkdtemp(join(tmpdir(), 'vault-wireguard-'));
+  // Permit hardened root to traverse runner-owned fixtures without listing the directory.
+  await chmod(dir, 0o711);
   const project = `vault-wireguard-${process.pid}`;
   const peer = `${project}-peer`;
   const file = join(dir, 'compose.json');
@@ -74,11 +76,11 @@ test('real WireGuard tunnel reaches admin HTTPS but cannot forward to the backen
       '-v', `${join(root, 'Caddyfile.common')}:/etc/caddy/common.caddy:ro`,
       image, 'caddy', 'adapt', '--config', '/etc/caddy/Caddyfile', '--adapter', 'caddyfile'));
     for (const policy of publicConfig.apps.tls.automation.policies) policy.issuers = [{ module: 'internal' }];
-    await writeFile(join(dir, 'public.json'), JSON.stringify(publicConfig));
+    await writeFile(join(dir, 'public.json'), JSON.stringify(publicConfig), { mode: 0o644 });
     services.caddy.volumes = services.caddy.volumes.filter(volume => volume.target !== '/etc/caddy/Caddyfile');
     services.caddy.volumes.push({ type: 'bind', source: join(dir, 'public.json'), target: '/etc/caddy/test.json', read_only: true });
     services.caddy.command = ['caddy', 'run', '--config', '/etc/caddy/test.json'];
-    await writeFile(file, JSON.stringify(config));
+    await writeFile(file, JSON.stringify(config), { mode: 0o644 });
     compose('config', '--quiet');
     docker('run', '--rm', '-e', 'CGO_ENABLED=0', '-e', 'GOTELEMETRY=off',
       '-v', `${root}:/src:ro`, '-v', `${dir}:/out`, '-w', '/src', 'golang:1.26-alpine',
@@ -108,6 +110,9 @@ test('real WireGuard tunnel reaches admin HTTPS but cannot forward to the backen
     // Exercise the real encrypted tunnel on its Docker ingress; loopback-published UDP is inspected above.
     await writeFile(join(dir, 'wg0.conf'), originalProfile.replace(/^Endpoint\s*=.*$/m, `Endpoint = ${gatewayIP}:51820`), { mode: 0o600 });
     const [runtime] = JSON.parse(docker('inspect', gateway));
+    // The peer runs as root with no DAC override; keep its private key root-only, not world-readable.
+    docker('run', '--rm', '--cap-drop', 'ALL', '--cap-add', 'CHOWN',
+      '-v', `${dir}:/test`, runtime.Config.Image, 'chown', '0:0', '/test/wg0.conf');
     docker('run', '-d', '--name', peer, '--network', ingress[0], '--cap-drop', 'ALL', '--cap-add', 'NET_ADMIN',
       '--security-opt', 'no-new-privileges:true', '--read-only', '--tmpfs', '/tmp',
       '-v', `${dir}:/test:ro`, '--entrypoint', '/bin/sh', runtime.Config.Image,

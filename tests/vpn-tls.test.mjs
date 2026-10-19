@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { execFileSync } from 'node:child_process';
-import { mkdtemp, readFile, writeFile, rm } from 'node:fs/promises';
+import { execFileSync, spawnSync } from 'node:child_process';
+import { chmod, mkdtemp, readFile, writeFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import https from 'node:https';
@@ -49,6 +49,8 @@ test('production VPN IP serves admin while public listeners abort IP and unknown
     env: { ...process.env, ACME_EMAIL: 'test@example.com', PUBLIC_BIND_IP: '192.0.2.10' },
   }));
   const dir = await mkdtemp(join(tmpdir(), 'vault-vpn-tls-'));
+  // Hardened root has no DAC override on native Linux bind mounts.
+  await chmod(dir, 0o711);
   const name = `vault-vpn-tls-${process.pid}`;
   const vpnName = `${name}-private`;
   const started = [];
@@ -83,7 +85,7 @@ test('production VPN IP serves admin while public listeners abort IP and unknown
         // Substitute only public issuance; production VPN policy and all routes stay unchanged.
         for (const policy of policies) policy.issuers = [{ module: 'internal' }];
       }
-      await writeFile(join(dir, `${container}.json`), JSON.stringify(adapted));
+      await writeFile(join(dir, `${container}.json`), JSON.stringify(adapted), { mode: 0o644 });
       docker('run', '--rm', '-v', `${dir}:/test:ro`, image, 'caddy', 'validate', '--config', `/test/${container}.json`);
       const service = services[container === vpnName ? 'caddy-vpn' : 'caddy'];
       assert.equal(service.read_only, true);
@@ -110,8 +112,9 @@ test('production VPN IP serves admin while public listeners abort IP and unknown
       started.push(container);
     }
     for (const container of started) {
+      const logs = spawnSync('docker', ['logs', container], { encoding: 'utf8', timeout: 10000 });
       assert.equal(docker('inspect', '--format', '{{.State.Running}}', container), 'true',
-        `${container} failed to start: ${docker('logs', container)}`);
+        `${container} failed to start: ${logs.stdout || ''}${logs.stderr || ''}`);
     }
     const ports = JSON.parse(docker('inspect', '--format', '{{json .NetworkSettings.Ports}}', name));
     const vpnPorts = JSON.parse(docker('inspect', '--format', '{{json .NetworkSettings.Ports}}', vpnName));
