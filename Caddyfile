@@ -14,6 +14,15 @@
 		}
 	}
 	servers {
+		# Only the webserver proxy reaches this server. It passes TLS through and
+		# prepends a PROXY header with the client's address, trusted from the
+		# proxy's fixed address alone, so {remote_host} stays the real client.
+		listener_wrappers {
+			proxy_protocol {
+				allow 172.31.250.2/32
+			}
+			tls
+		}
 		protocols h1 h2
 		max_header_size 16KB
 		timeouts {

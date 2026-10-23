@@ -43,6 +43,7 @@ ZIP entries use the uncompressed store method and preserve file paths, including
 - A Linux host with kernel WireGuard and IPv4/IPv6 netfilter support.
 - Docker Engine with Compose v2.
 - A public domain, DNS control, and inbound TCP 80/443 plus a WireGuard UDP port.
+- The shared [webserver](https://github.com/gmiszori/webserver) proxy, deployed first with `VAULT_DOMAIN` set to this domain. It owns host ports 80/443 and creates the external `webserver` network this stack joins.
 - Sufficient disk space for ciphertext, audit metadata, and other host workloads.
 
 WireGuard requires `NET_ADMIN` inside its container namespace, not privileged mode, host networking, a Docker socket, or `SYS_MODULE`. Install any missing kernel support on the host before deployment; the container fails closed if it is unavailable.
@@ -55,7 +56,7 @@ Point the domain's A record to the server. Publish an AAAA record only after con
 
 | Interface | Port | Purpose |
 | --- | --- | --- |
-| Host `PUBLIC_BIND_IP` | TCP 80/443 | Public HTTPS, redirects, and ACME |
+| Host `PUBLIC_BIND_IP` | TCP 80/443 | Public HTTPS, redirects, and ACME; published by the webserver proxy, which passes TLS through to public Caddy |
 | Host `PUBLIC_BIND_IP` | UDP `WIREGUARD_PORT` (default 51821) | WireGuard transport; container port 51820 |
 | Tunnel `VPN_BIND_IP` (default `10.13.13.1`) | TCP 80/443 | VPN-only admin HTTPS and redirect; no host-published TCP port |
 | Docker backend networks | TCP 8080/8081 | Public/admin API listeners; no host-published ports |
@@ -202,18 +203,21 @@ Messaging services may crop or cache the artwork, including after package deleti
 
 ```mermaid
 flowchart LR
-    Recipient[Recipient browser] -->|Public HTTPS| Public[Public Caddy]
+    Recipient[Recipient browser] -->|Public HTTPS| Edge[webserver proxy: TLS passthrough]
+    Edge -->|webserver: PROXY v2| Public[Public Caddy]
     Public -->|backend: public API| API[Go API and encrypted storage]
     Device[Admin device] -->|WireGuard UDP 51821| WG[WireGuard namespace]
     WG -->|Tunnel HTTPS only| Private[VPN Caddy in same namespace]
     Private -->|vpn_backend: admin API| API
 ```
 
-Public Caddy joins `edge` and internal `backend`; it cannot access the private backend, WireGuard keys, or VPN CA. WireGuard joins `vpn_ingress` and internal `vpn_backend`; the ingress bridge permits UDP port publishing. VPN Caddy binds only the tunnel IP. Both proxies share headers and upstream settings from [`Caddyfile.common`](./Caddyfile.common).
+Public Caddy joins `edge`, internal `backend`, and the external `webserver` network (alias `vault`); it cannot access the private backend, WireGuard keys, or VPN CA. WireGuard joins `vpn_ingress` and internal `vpn_backend`; the ingress bridge permits UDP port publishing. VPN Caddy binds only the tunnel IP. Both proxies share headers and upstream settings from [`Caddyfile.common`](./Caddyfile.common).
 
 The API has separate public (`172.30.0.2:8080`) and admin (`172.30.0.130:8081`) listeners. The public handler rejects admin routes even with valid credentials. The admin handler requires the actual socket peer to equal `ADMIN_PROXY_IP` (`172.30.0.131`) as well as application authentication. Forwarded headers cannot satisfy that peer check. This is interface isolation, not process isolation against an API compromise.
 
-Public requests to unknown hostnames or an IP address are aborted, or fail TLS negotiation. Hostname checks are not authentication. Do not attach unrelated containers to backend networks or add a CDN/external reverse proxy without redesigning client-IP reporting and trust boundaries.
+Public requests to unknown hostnames or an IP address are aborted, or fail TLS negotiation. Hostname checks are not authentication.
+
+The webserver proxy routes by SNI without decrypting, so certificates and TLS stay in public Caddy. Each connection it forwards starts with a PROXY v2 header carrying the client address. Public Caddy honors that header only from the proxy's fixed address `172.31.250.2`, so `{remote_host}`, the forwarded `X-Real-IP`, rate limits, and audit IPs remain the real client; other containers on the shared network cannot claim an address. Do not attach unrelated containers to backend networks or add a CDN/external reverse proxy without redesigning client-IP reporting and trust boundaries.
 
 #### Changing listener addresses
 

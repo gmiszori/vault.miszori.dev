@@ -14,9 +14,10 @@ const privateProxy = config.services['caddy-vpn'];
 const wireguard = config.services.wireguard;
 
 test('production proxies publish only their own interface and listeners', () => {
-  assert.deepEqual(publicProxy.ports.map(({ host_ip, published, target }) => [host_ip, published, target]), [
-    ['192.0.2.10', '80', 80], ['192.0.2.10', '443', 443],
-  ]);
+  // Public 80/443 belong to the webserver repo's proxy, which reaches Caddy by this alias.
+  assert.equal(publicProxy.ports, undefined);
+  assert.deepEqual(publicProxy.networks.webserver.aliases, ['vault']);
+  assert.equal(config.networks.webserver.external, true);
   assert.deepEqual(wireguard.ports.map(({ host_ip, published, target, protocol }) => [host_ip, published, target, protocol]), [
     ['192.0.2.10', '51821', 51820, 'udp'],
   ]);
@@ -42,7 +43,7 @@ test('WireGuard UDP port and tunnel address are configurable without publishing 
 });
 
 test('VPN namespace has a dedicated ingress bridge and isolated backend and secrets', () => {
-  assert.deepEqual(Object.keys(publicProxy.networks).sort(), ['backend', 'edge']);
+  assert.deepEqual(Object.keys(publicProxy.networks).sort(), ['backend', 'edge', 'webserver']);
   assert.equal(privateProxy.networks, undefined);
   assert.deepEqual(Object.keys(wireguard.networks).sort(), ['vpn_backend', 'vpn_ingress']);
   assert.notEqual(config.networks.vpn_ingress.internal, true);

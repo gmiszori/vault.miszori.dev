@@ -49,9 +49,8 @@ services:
       DOMAIN: ${DOMAIN:-vault.miszori.dev}
       PUBLIC_ORIGIN: https://${DOMAIN:-vault.miszori.dev}
       ACME_EMAIL: ${ACME_EMAIL:?Set ACME_EMAIL in .env}
-    ports:
-      - "${PUBLIC_BIND_IP:?Set the host public-facing interface IP}:80:80"
-      - "${PUBLIC_BIND_IP}:443:443"
+    # No host ports: the webserver proxy (github.com/gmiszori/webserver) owns
+    # 80/443 and passes this domain's TLS through to here.
     volumes:
       - ./Caddyfile:/etc/caddy/Caddyfile:ro
       - ./Caddyfile.common:/etc/caddy/common.caddy:ro
@@ -59,8 +58,10 @@ services:
       - caddy_data:/data
       - caddy_config:/config
     networks:
-      - edge
-      - backend
+      edge:
+      backend:
+      webserver:
+        aliases: [vault]
     depends_on:
       api:
         condition: service_healthy
@@ -156,6 +157,9 @@ volumes:
 
 networks:
   edge:
+  # Created by the webserver repo; shared with its proxy and other sites.
+  webserver:
+    external: true
   vpn_ingress:
   backend:
     internal: true

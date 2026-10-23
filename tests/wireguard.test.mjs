@@ -53,6 +53,9 @@ test('real WireGuard tunnel reaches admin HTTPS but cannot forward to the backen
       service.ulimits.core = 0;
     }
     for (const network of Object.values(networks)) delete network.name;
+    // Disposable stand-in for the webserver repo's shared network; this test
+    // reaches public Caddy through its own loopback ports instead.
+    networks.webserver = {};
     for (const volume of Object.values(volumes)) delete volume.name;
     networks.backend.ipam.config[0].subnet = '172.28.0.0/25';
     networks.vpn_backend.ipam.config[0].subnet = '172.28.0.128/25';
