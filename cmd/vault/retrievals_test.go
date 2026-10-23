@@ -270,7 +270,13 @@ func TestReusableRevocationDefersCleanupWithoutResurrection(t *testing.T) {
 func TestRetrievalPaginationPrivacyAndCount(t *testing.T) {
 	s := testServer(t)
 	id := reusablePackage(t, s)
+	now := time.Now()
+	s.now = func() time.Time { return now }
 	for i := 0; i < 205; i++ {
+		// Stay within the per-package claim limit while building a multi-page log.
+		if i%maxClaimsPerPackagePerMinute == 0 {
+			now = now.Add(time.Minute)
+		}
 		r := httptest.NewRequest("POST", "/api/packages/"+id+"/consume", nil)
 		r.Header.Set("X-Claim-Token", downloadClaimTokenFixture)
 		r.Header.Set("User-Agent", fmt.Sprintf("Firefox/130 Linux record-%d <script>", i))

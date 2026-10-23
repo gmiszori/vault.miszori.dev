@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -113,17 +114,27 @@ func TestGlobalBudgetsAndBusyClaimsPreserveData(t *testing.T) {
 	limits := defaultGateLimits()
 	limits.publicPerMinute = 2
 	s.gate = newRequestGate(limits)
+	unknown := strings.Repeat("ab", 32)
 	for n := 0; n < 3; n++ {
-		r := httptest.NewRequest("GET", "/api/packages/"+id, nil)
+		r := httptest.NewRequest("GET", "/api/packages/"+unknown, nil)
 		r.RemoteAddr = fmt.Sprintf("192.0.2.%d:1000", n)
 		w := httptest.NewRecorder()
 		s.ServeHTTP(w, r)
-		want := 200
+		want := 404
 		if n == 2 {
 			want = 429
 		}
 		if w.Code != want {
-			t.Fatalf("global public budget: %d want %d", w.Code, want)
+			t.Fatalf("global public failure budget: %d want %d", w.Code, want)
+		}
+	}
+	for n := 0; n < 3; n++ {
+		r := httptest.NewRequest("GET", "/api/packages/"+id, nil)
+		r.RemoteAddr = fmt.Sprintf("192.0.2.%d:1000", n+10)
+		w := httptest.NewRecorder()
+		s.ServeHTTP(w, r)
+		if w.Code != 200 {
+			t.Fatalf("exhausted failure budget blocked a valid link: %d", w.Code)
 		}
 	}
 	s.gate = newRequestGate(defaultGateLimits())

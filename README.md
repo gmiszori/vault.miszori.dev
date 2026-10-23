@@ -278,7 +278,8 @@ HTTPS protects transport, AES-GCM protects stored content, and the VPN/interface
 ### Runtime safeguards
 
 - Claim proofs and capacity are checked before state changes or ciphertext deletion. HTTP 429 responses occur before consumption, allowing retry with the original link.
-- Global/per-IP request and authentication-failure budgets accompany nonblocking request/upload/download admission. VPN authentication discovery/setup has a separate budget from public package traffic. Authenticated chunk uploads are exempt from the public per-minute budget; valid credentials are not rejected solely because the global failure budget is exhausted. These controls are not DDoS protection.
+- Per-IP request limits, a shared budget for *failed* public requests, and an authentication-failure budget accompany nonblocking request/upload/download admission. Only unknown or expired package IDs, invalid claim proofs, and malformed requests spend the shared public budget, so exhausting it does not block recipients holding valid links. Each package also accepts at most 30 claims per minute, which bounds audit growth from a leaked reusable link; excess claims receive HTTP 429 before anything is claimed or audited. VPN authentication discovery/setup has a separate budget from public package traffic. Authenticated chunk uploads are exempt from the public per-minute budget; valid credentials are not rejected solely because the global failure budget is exhausted. These controls are not DDoS protection.
+- Chunk uploads reserve quota and write ciphertext without holding the server-wide lock, so a slow upload does not delay recipients, cleanup, or other admin requests. Each package accepts one in-flight chunk at a time, and finalization waits for it.
 - The API runs as UID/GID 10001 in a shell-free `scratch` image, with a read-only root, dropped capabilities, `no-new-privileges`, resource caps, and an internal `/vault healthcheck` command.
 - Both Caddy services retain only `NET_BIND_SERVICE` and `no-new-privileges`; the management API is disabled. Keep that capability: the pinned binary's file capability otherwise causes Linux startup to fail with `operation not permitted`.
 - Proxies limit header size/read time, idle time, and upstream connections. Error logs strip claim/upload/authentication/cookie credentials; container logs rotate at 10 MiB × 3 per service.
@@ -295,12 +296,12 @@ Slow request bodies and individual response-record writes have two-minute I/O de
 | `MAX_CONCURRENT_DOWNLOADS` | `4` |
 | `MAX_CONCURRENT_UPLOADS` | `2` |
 | `MAX_BACKEND_CONNECTIONS` | `128` per listener |
-| `PUBLIC_REQUESTS_PER_MINUTE` | `600` per shared budget, with a fixed 120 per-IP limit |
+| `PUBLIC_REQUESTS_PER_MINUTE` | `600` failed public requests per shared budget, with a fixed 120 per-IP limit on all public requests |
 | `AUTH_FAILURES_PER_MINUTE` | `60` globally, with a fixed 20 per-IP limit |
 
 Values must be positive. Upload/download concurrency cannot exceed request concurrency, which cannot exceed backend connections.
 
-The admin **Transfer activity** meter reports quota-counted ciphertext and the configured limit in decimal GB (1 GB = 1,000,000,000 bytes), refreshed with the package list. Uploading, ready, and active-download ciphertext count toward usage until cleanup releases it. Historical audit records do not count. This is neither total filesystem usage nor free disk space: audit logs and other workloads require additional headroom, especially for frequently retrieved reusable packages.
+The admin **Transfer activity** meter reports quota-counted ciphertext and the configured limit in decimal GB (1 GB = 1,000,000,000 bytes), refreshed with the package list. Uploading, ready, and active-download ciphertext count toward usage until cleanup releases it, as does the declared size of a chunk being written (the full 8 MiB record limit when no length is declared). Historical audit records do not count. This is neither total filesystem usage nor free disk space: audit logs and other workloads require additional headroom, especially for frequently retrieved reusable packages.
 
 ## Development and testing
 

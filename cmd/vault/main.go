@@ -27,6 +27,7 @@ import (
 const maxChunk = 8*1024*1024 + 16
 const maxChunks = 30000
 const maxPackageBytes int64 = 20*1024*1024*1024 + maxChunks*16 + 8*1024*1024
+const maxClaimsPerPackagePerMinute = 30
 
 type Package struct {
 	ID             string          `json:"id"`
@@ -47,6 +48,7 @@ type Package struct {
 	activeReads    int
 	auditBroken    bool
 	cleanupPending bool
+	chunkInFlight  bool
 }
 type diskPackage struct {
 	Package
@@ -64,6 +66,7 @@ type Server struct {
 	packages           map[string]*Package
 	limits             map[string]bucket
 	quota              int64
+	reservedBytes      int64
 	now                func() time.Time
 	labelKey           LabelKey
 	gate               *requestGate
@@ -257,24 +260,38 @@ func decode(w http.ResponseWriter, r *http.Request, v any) bool {
 func (s *Server) allowed(key string, n int) bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	return s.allowedLocked(key, n)
+}
+func (s *Server) allowedLocked(key string, n int) bool {
 	now := s.now()
-	b := s.limits[key]
+	b, tracked := s.limits[key]
 	if now.Sub(b.start) >= time.Minute {
 		b = bucket{start: now}
 	}
 	b.count++
-	if len(s.limits) > 10000 {
+	// A full table refuses only new keys; already-tracked clients keep their own budgets.
+	if !tracked && len(s.limits) >= 10000 {
 		for k, v := range s.limits {
 			if now.Sub(v.start) >= time.Minute {
 				delete(s.limits, k)
 			}
 		}
-		if len(s.limits) > 10000 {
+		if len(s.limits) >= 10000 {
 			return false
 		}
 	}
 	s.limits[key] = b
 	return b.count <= n
+}
+
+// Valid package IDs and claim proofs are unguessable, so only failed public requests
+// spend the shared budget; exhausting it cannot block recipients holding real links.
+func (s *Server) publicFailure(w http.ResponseWriter, code int, msg string) {
+	if !s.gate.allowPublicFailure(s.now()) {
+		fail(w, 429, "Too many requests")
+		return
+	}
+	fail(w, code, msg)
 }
 func guardRequestBody(w http.ResponseWriter, r *http.Request) func() {
 	if r.ContentLength == 0 && len(r.TransferEncoding) == 0 {
@@ -339,13 +356,13 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		s.admin(w, r)
 		return
 	}
-	if !s.allowed("public:"+s.peerIP(r), 120) || !s.gate.allowPublic(s.now()) {
+	if !s.allowed("public:"+s.peerIP(r), 120) {
 		fail(w, 429, "Too many requests")
 		return
 	}
 	parts := strings.Split(strings.Trim(r.URL.Path, "/"), "/")
 	if len(parts) < 3 || parts[0] != "api" || parts[1] != "packages" || !validID(parts[2]) {
-		fail(w, 404, "Package already viewed or does not exist")
+		s.publicFailure(w, 404, "Package already viewed or does not exist")
 		return
 	}
 	id := parts[2]
@@ -353,11 +370,11 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		if r.ContentLength != 0 || len(r.TransferEncoding) != 0 {
 			r.Close = true
 			w.Header().Set("Connection", "close")
-			fail(w, 400, "Download claims must not contain a request body")
+			s.publicFailure(w, 400, "Download claims must not contain a request body")
 			return
 		}
 		if r.Header.Get("Sec-Fetch-Site") == "cross-site" {
-			fail(w, 403, "Cross-origin request denied")
+			s.publicFailure(w, 403, "Cross-origin request denied")
 			return
 		}
 		s.consume(w, r, id)
@@ -365,16 +382,17 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	if len(parts) == 3 && r.Method == "GET" {
 		s.mu.Lock()
-		defer s.mu.Unlock()
 		p := s.packages[id]
 		if p == nil || p.Status != "ready" || !validClaimHash(p.ClaimHash) || !s.now().Before(p.ExpiresAt) {
-			fail(w, 404, "Package already viewed or does not exist")
+			s.mu.Unlock()
+			s.publicFailure(w, 404, "Package already viewed or does not exist")
 			return
 		}
+		defer s.mu.Unlock()
 		writeJSON(w, 200, map[string]any{"status": "ready", "expiresAt": p.ExpiresAt, "oneTime": p.OneTime, "format": p.Format})
 		return
 	}
-	fail(w, 404, "Not found")
+	s.publicFailure(w, 404, "Not found")
 }
 func (s *Server) storageUsedLocked() int64 {
 	var used int64
@@ -383,13 +401,17 @@ func (s *Server) storageUsedLocked() int64 {
 			used += p.Bytes
 		}
 	}
-	return used
+	return used + s.reservedBytes
 }
 
 func (s *Server) admin(w http.ResponseWriter, r *http.Request) {
 	path := strings.TrimPrefix(r.URL.Path, "/api/admin/")
 	if path == "config" && r.Method == "GET" {
 		writeJSON(w, 200, map[string]any{"publicOrigin": s.origin, "labelKey": s.labelKey})
+		return
+	}
+	if parts := strings.Split(path, "/"); r.Method == http.MethodPut && len(parts) == 4 && parts[0] == "packages" && validID(parts[1]) && parts[2] == "chunks" {
+		s.uploadChunk(w, r, parts[1], parts[3])
 		return
 	}
 	s.mu.Lock()
@@ -493,71 +515,16 @@ func (s *Server) admin(w http.ResponseWriter, r *http.Request) {
 		fail(w, 403, "Invalid upload token")
 		return
 	}
-	if len(parts) == 4 && parts[2] == "chunks" && r.Method == "PUT" {
-		n, err := strconv.Atoi(parts[3])
-		if err != nil || n < 0 || n >= maxChunks {
-			fail(w, 400, "Invalid chunk index")
-			return
-		}
-		if n != p.Chunks {
-			fail(w, 409, "Chunks must be uploaded in order; retries must reuse the next index")
-			return
-		}
-		minBytes, chunkLimit, packageLimit := int64(16), int64(maxChunk), maxPackageBytes
-		if p.Format == "text" {
-			if n >= 2 {
-				fail(w, 400, "Text packages require exactly two records")
-				return
-			}
-			minBytes, chunkLimit = textRecordLimits(n)
-			packageLimit = maxTextPackageBytes
-			if remaining := packageLimit - p.Bytes; remaining < chunkLimit {
-				chunkLimit = remaining
-			}
-			if chunkLimit < minBytes || r.ContentLength > chunkLimit {
-				fail(w, 413, "Text record or package limit exceeded")
-				return
-			}
-		}
-		used := s.storageUsedLocked()
-		f, err := os.OpenFile(s.chunk(p.ID, n)+".tmp", os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0600)
-		if err != nil {
-			fail(w, 500, "Storage unavailable")
-			return
-		}
-		count, err := io.Copy(f, http.MaxBytesReader(w, r.Body, chunkLimit))
-		if err == nil {
-			err = f.Sync()
-		}
-		closeErr := f.Close()
-		if err == nil {
-			err = closeErr
-		}
-		if err != nil || count < minBytes || p.Bytes+count > packageLimit || used+count > s.quota {
-			_ = os.Remove(s.chunk(p.ID, n) + ".tmp")
-			fail(w, 413, "Chunk, package, or storage limit exceeded")
-			return
-		}
-		if err = os.Rename(s.chunk(p.ID, n)+".tmp", s.chunk(p.ID, n)); err != nil {
-			fail(w, 500, "Storage unavailable")
-			return
-		}
-		p.Chunks++
-		p.Bytes += count
-		if err = s.save(p); err != nil {
-			_ = s.purge(p, "failed")
-			fail(w, 500, "Storage unavailable")
-			return
-		}
-		w.WriteHeader(204)
-		return
-	}
 	if len(parts) == 3 && parts[2] == "finalize" && r.Method == "POST" {
 		var req struct {
 			Chunks    int    `json:"chunks"`
 			ClaimHash string `json:"claimHash"`
 		}
 		if !decode(w, r, &req) {
+			return
+		}
+		if p.chunkInFlight {
+			fail(w, 409, "A chunk upload is still in progress")
 			return
 		}
 		if req.Chunks != p.Chunks || req.Chunks < 1 || !validClaimHash(req.ClaimHash) {
@@ -589,12 +556,136 @@ func (s *Server) admin(w http.ResponseWriter, r *http.Request) {
 	}
 	fail(w, 404, "Not found")
 }
+
+// uploadChunk reserves quota under s.mu, streams the body to disk without the lock so
+// recipients and cleanup are never blocked by a slow upload, then commits under s.mu.
+func (s *Server) uploadChunk(w http.ResponseWriter, r *http.Request, id, index string) {
+	s.mu.Lock()
+	p := s.packages[id]
+	if p == nil {
+		s.mu.Unlock()
+		fail(w, 404, "Not found")
+		return
+	}
+	if p.Status != "uploading" || !s.now().Before(p.ExpiresAt) {
+		s.mu.Unlock()
+		fail(w, 409, "Package not uploading")
+		return
+	}
+	token := hash(r.Header.Get("X-Upload-Token"))
+	if subtle.ConstantTimeCompare([]byte(token), []byte(p.TokenHash)) != 1 {
+		s.mu.Unlock()
+		fail(w, 403, "Invalid upload token")
+		return
+	}
+	n, err := strconv.Atoi(index)
+	if err != nil || n < 0 || n >= maxChunks {
+		s.mu.Unlock()
+		fail(w, 400, "Invalid chunk index")
+		return
+	}
+	// One record at a time per package preserves strict ordering without holding s.mu.
+	if p.chunkInFlight {
+		s.mu.Unlock()
+		fail(w, 409, "A chunk upload is already in progress")
+		return
+	}
+	if n != p.Chunks {
+		s.mu.Unlock()
+		fail(w, 409, "Chunks must be uploaded in order; retries must reuse the next index")
+		return
+	}
+	minBytes, limit, packageLimit := int64(16), int64(maxChunk), maxPackageBytes
+	if p.Format == "text" {
+		if n >= 2 {
+			s.mu.Unlock()
+			fail(w, 400, "Text packages require exactly two records")
+			return
+		}
+		minBytes, limit = textRecordLimits(n)
+		packageLimit = maxTextPackageBytes
+	}
+	if remaining := packageLimit - p.Bytes; remaining < limit {
+		limit = remaining
+	}
+	if limit < minBytes || r.ContentLength > limit {
+		s.mu.Unlock()
+		fail(w, 413, "Chunk, package, or storage limit exceeded")
+		return
+	}
+	// Reserve the declared length, or the record maximum when the length is unknown.
+	if r.ContentLength >= 0 {
+		limit = r.ContentLength
+	}
+	if limit < minBytes || s.storageUsedLocked()+limit > s.quota {
+		s.mu.Unlock()
+		fail(w, 413, "Chunk, package, or storage limit exceeded")
+		return
+	}
+	p.chunkInFlight = true
+	s.reservedBytes += limit
+	s.mu.Unlock()
+
+	tmp := s.chunk(id, n) + ".tmp"
+	var count int64
+	f, err := os.OpenFile(tmp, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0600)
+	opened := err == nil
+	if opened {
+		count, err = io.Copy(f, http.MaxBytesReader(w, r.Body, limit))
+		if err == nil {
+			err = f.Sync()
+		}
+		if closeErr := f.Close(); err == nil {
+			err = closeErr
+		}
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.reservedBytes -= limit
+	p.chunkInFlight = false
+	if !opened {
+		fail(w, 500, "Storage unavailable")
+		return
+	}
+	// Deletion or expiry may have purged the package while the body was being written.
+	if p.Status != "uploading" || !s.now().Before(p.ExpiresAt) {
+		_ = os.Remove(tmp)
+		fail(w, 409, "Package not uploading")
+		return
+	}
+	if err != nil || count < minBytes || p.Bytes+count > packageLimit || s.storageUsedLocked()+count > s.quota {
+		_ = os.Remove(tmp)
+		fail(w, 413, "Chunk, package, or storage limit exceeded")
+		return
+	}
+	if err = os.Rename(tmp, s.chunk(id, n)); err != nil {
+		fail(w, 500, "Storage unavailable")
+		return
+	}
+	p.Chunks++
+	p.Bytes += count
+	if err = s.save(p); err != nil {
+		_ = s.purge(p, "failed")
+		fail(w, 500, "Storage unavailable")
+		return
+	}
+	w.WriteHeader(204)
+}
+
 func (s *Server) consume(w http.ResponseWriter, r *http.Request, id string) {
 	s.mu.Lock()
 	p := s.packages[id]
 	if p == nil || p.Status != "ready" || !s.now().Before(p.ExpiresAt) || !matchesClaimToken(r.Header.Get("X-Claim-Token"), p.ClaimHash) {
 		s.mu.Unlock()
-		fail(w, 404, "Package already viewed or does not exist")
+		s.publicFailure(w, 404, "Package already viewed or does not exist")
+		return
+	}
+	// Bounds audit growth from a leaked reusable link; 429 happens before any claim.
+	if !s.allowedLocked("claim:"+id, maxClaimsPerPackagePerMinute) {
+		s.mu.Unlock()
+		w.Header().Set("Retry-After", "60")
+		fail(w, 429, "Too many retrievals; no package has been claimed")
 		return
 	}
 	retrieval := Retrieval{OpenedAt: s.now(), OpenedIP: s.peerIP(r), OpenedBrowser: browserProfile(r)}

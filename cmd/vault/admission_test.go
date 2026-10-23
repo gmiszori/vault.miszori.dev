@@ -195,32 +195,32 @@ func TestRequestGateMinuteBuckets(t *testing.T) {
 	limits.publicPerMinute, limits.authFailuresPerMinute = 2, 1
 	g := newRequestGate(limits)
 	now := time.Date(2026, 1, 1, 12, 0, 59, 0, time.UTC)
-	if !g.allowPublic(now) || !g.allowPublic(now) || g.allowPublic(now) {
+	if !g.allowPublicFailure(now) || !g.allowPublicFailure(now) || g.allowPublicFailure(now) {
 		t.Fatal("public budget not enforced")
 	}
 	if !g.allowAuthFailure(now) || g.allowAuthFailure(now) {
 		t.Fatal("independent auth budget not enforced")
 	}
 	for i := 0; i < 100; i++ {
-		if g.allowPublic(now.Add(-time.Hour)) || g.allowAuthFailure(now.Add(-time.Hour)) {
+		if g.allowPublicFailure(now.Add(-time.Hour)) || g.allowAuthFailure(now.Add(-time.Hour)) {
 			t.Fatal("rewinding clock replenished budget")
 		}
 	}
-	if g.public.count != 2 || g.authFailures.count != 1 {
+	if g.publicFailures.count != 2 || g.authFailures.count != 1 {
 		t.Fatal("rejected requests increased bucket counters")
 	}
 	now = now.Add(time.Second)
-	if !g.allowPublic(now) || !g.allowAuthFailure(now) {
+	if !g.allowPublicFailure(now) || !g.allowAuthFailure(now) {
 		t.Fatal("fixed minute boundary did not replenish budgets")
 	}
-	if !g.allowPublic(now.Add(-time.Hour)) || g.allowPublic(now) {
+	if !g.allowPublicFailure(now.Add(-time.Hour)) || g.allowPublicFailure(now) {
 		t.Fatal("backwards clock failed to retain current bucket")
 	}
-	if !g.allowPublic(now.Add(24 * time.Hour)) {
+	if !g.allowPublicFailure(now.Add(24 * time.Hour)) {
 		t.Fatal("forward clock failed to replenish budget")
 	}
 	zero := newRequestGate(limits)
-	if !zero.allowPublic(time.Time{}) || !zero.allowPublic(time.Time{}) || zero.allowPublic(time.Time{}) {
+	if !zero.allowPublicFailure(time.Time{}) || !zero.allowPublicFailure(time.Time{}) || zero.allowPublicFailure(time.Time{}) {
 		t.Fatal("zero time repeatedly initialized bucket")
 	}
 }
@@ -234,7 +234,7 @@ func TestRequestGateConcurrentBudgetsAndChunkTraffic(t *testing.T) {
 	var wg sync.WaitGroup
 	for i := 0; i < 100; i++ {
 		wg.Go(func() {
-			if g.allowPublic(now) {
+			if g.allowPublicFailure(now) {
 				public.Add(1)
 			}
 			if g.allowAuthFailure(now) {

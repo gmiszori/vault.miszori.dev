@@ -79,7 +79,7 @@ type requestGate struct {
 	requests       chan struct{}
 	downloads      chan struct{}
 	uploads        chan struct{}
-	public         minuteBucket
+	publicFailures minuteBucket
 	adminDiscovery minuteBucket
 	authFailures   minuteBucket
 }
@@ -122,8 +122,8 @@ func (g *requestGate) acquire(r *http.Request) (release func(), ok bool) {
 	}, true
 }
 
-func (g *requestGate) allowPublic(now time.Time) bool {
-	return g.public.allow(now, g.limits.publicPerMinute)
+func (g *requestGate) allowPublicFailure(now time.Time) bool {
+	return g.publicFailures.allow(now, g.limits.publicPerMinute)
 }
 
 func (g *requestGate) allowAdminDiscovery(now time.Time) bool {
