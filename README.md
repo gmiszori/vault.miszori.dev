@@ -99,16 +99,15 @@ WireGuard generates persistent device identities. The VPN proxy waits for tunnel
 
 ### 4. Enroll an admin device
 
-Export the device profile and the VPN CA's **public root certificate** through a trusted local channel. Replace `admin` with the configured peer name if needed.
+Export the device profile through a trusted local channel. Replace `admin` with the configured peer name if needed.
 
 ```bash
 install -d -m 700 ./vpn-export
 docker compose cp wireguard:/config/peers/admin/admin.conf ./vpn-export/admin.conf
-docker compose cp caddy-vpn:/data/caddy/pki/authorities/local/root.crt ./vpn-export/vpn-root.crt
 chmod 600 ./vpn-export/*
 ```
 
-Import the profile into the official WireGuard client and activate the tunnel. Independently verify the root certificate, then install it in the device or browser trust store. Export only the certificate, never the CA private key. HTTPS remains mandatory inside the VPN for WebCrypto and Service Workers; do not disable secure-context checks or bypass an unverified certificate warning.
+Import the profile into the official WireGuard client and activate the tunnel. HTTPS remains mandatory inside the VPN for WebCrypto and Service Workers; do not disable secure-context checks.
 
 Each profile contains a private key. Use one profile per device; never commit, publish, or paste it into chat. Delete exported copies after secure transfer. The default profile routes only `10.13.13.1/32`; other device traffic is unchanged, and server-side rules block forwarding to the LAN, Internet, Docker networks, and other peers.
 
@@ -133,7 +132,7 @@ A connected device should show a recent handshake. Verify that:
 - Through the VPN, the admin page loads over trusted HTTPS and sign-in works.
 - Public recipients can retrieve a test package without WireGuard.
 
-Container health confirms local service readiness, not remote reachability. If no handshake appears, check endpoint DNS, UDP ports, firewalls, and NAT. If the tunnel connects but administration fails, check peer routes, subnet overlap, VPN Caddy logs, and certificate trust.
+Container health confirms local service readiness, not remote reachability. If no handshake appears, check endpoint DNS, UDP ports, firewalls, and NAT. If the tunnel connects but administration fails, check peer routes, subnet overlap, and VPN Caddy logs.
 
 ## Usage
 
@@ -422,7 +421,7 @@ docker compose up -d --force-recreate --wait wireguard caddy-vpn
 
 Re-export changed profiles through a trusted channel; imported profiles do not update themselves. To revoke a device, remove its name from `WIREGUARD_PEERS` and recreate both services. Keys and address reservations persist across removal/reordering, so re-adding a name re-enables its old identity. Use a **new peer name** when replacing a lost or compromised device. A maximum of 253 addresses can be reserved; removed reservations are not reused.
 
-Tunnel subnet/server-address changes require a new WireGuard configuration volume and device re-enrollment. Preserve identity and VPN CA volumes during normal maintenance; deleting them changes trust. Never publish profiles or server/CA private keys.
+Tunnel subnet/server-address changes require a new WireGuard configuration volume and device re-enrollment. Preserve identity and VPN CA volumes during normal maintenance; deleting them changes device identities and the VPN certificate. Never publish profiles or server/CA private keys.
 
 ### Preserve and remove data
 
