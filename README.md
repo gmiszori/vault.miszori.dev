@@ -6,8 +6,23 @@ Administration is restricted to a WireGuard VPN and requires application sign-in
 
 > **Important:** A one-time package is consumed when an authorized download or reveal begins, even if delivery fails. Opening a link or fetching its preview does not consume it. Client-side encryption does not protect future sessions if the server is compromised and serves modified JavaScript.
 
+| Recipient: file package | Recipient: text secret |
+| --- | --- |
+| ![One-time file package ready to download](docs/screenshots/download.png) | ![One-time text secret ready to reveal](docs/screenshots/secret.png) |
+
+<details>
+<summary>Admin: upload, share link, and transfer activity (VPN only)</summary>
+
+![Admin workspace with the upload form, a generated share link, and the transfer activity table](docs/screenshots/admin.png)
+
+</details>
+
+Screenshots come from the local test stack with sample data.
+
 ## Contents
 
+- [Threat model at a glance](#threat-model-at-a-glance)
+- [How this was built](#how-this-was-built)
 - [Features and limits](#features-and-limits)
 - [Deployment](#deployment)
 - [Usage](#usage)
@@ -15,6 +30,28 @@ Administration is restricted to a WireGuard VPN and requires application sign-in
 - [Security and privacy](#security-and-privacy)
 - [Development and testing](#development-and-testing)
 - [Operations and maintenance](#operations-and-maintenance)
+
+## Threat model at a glance
+
+Each package is encrypted in the uploader's browser with a fresh random 256-bit AES-GCM key. The key travels only in the share link's `#` fragment, which browsers never send to the server. Details are in [Architecture and encryption](#architecture-and-encryption) and [Security and privacy](#security-and-privacy).
+
+| Attacker | Cannot | Can |
+| --- | --- | --- |
+| Network observer | Read content, keys, or links (HTTPS) | See that a transfer happened and its approximate size |
+| Someone with a link but no `#` key, such as a preview bot | Decrypt, or claim and consume a one-time package | Load the landing page |
+| Copy of the server's disk | Decrypt content or package names; reconstruct links; claim packages from stored hashes; sign in with the stored verifier | Read sizes, timestamps, and retrieval logs (IP and browser); brute-force the admin password offline at 600,000 PBKDF2 rounds per guess |
+| Malicious server operator during a compromise | Recover keys for links never opened during the compromise | Serve modified JavaScript that captures keys of links opened during the compromise |
+
+Design choices behind these properties:
+
+- **Per-chunk integrity.** Files are split into 8 MiB chunks. Each uses a unique counter IV and AAD binding it to its package and position, so tampered, reordered, or substituted chunks fail decryption.
+- **Truncation detection.** Chunk 0 is an encrypted manifest of file names and sizes, so missing or extra chunks are detected and the server never learns file names.
+- **Proof of key possession.** Recipients prove they hold the key with an HKDF-derived claim token; the server stores only its SHA-256 hash.
+- **Password never sent.** The admin password is stretched with PBKDF2 in the browser and split by HKDF into a sign-in secret and a name-encryption key that never leaves the browser.
+
+## How this was built
+
+I designed the architecture and threat model: client-side encryption, VPN-only administration, separated public and admin listeners, and the container and proxy topology. The code was written with AI under my direction and verified through the test suite, CI, and my own review. It has not been independently audited.
 
 ## Features and limits
 
@@ -43,7 +80,7 @@ ZIP entries use the uncompressed store method and preserve file paths, including
 - A Linux host with kernel WireGuard and IPv4/IPv6 netfilter support.
 - Docker Engine with Compose v2.
 - A public domain, DNS control, and inbound TCP 80/443 plus a WireGuard UDP port.
-- The shared [webserver](https://github.com/gmiszori/webserver) proxy, deployed first with `VAULT_DOMAIN` set to this domain. It owns host ports 80/443 and creates the external `webserver` network this stack joins.
+- The shared [webserver-proxy](https://github.com/gmiszori/webserver-proxy) proxy, deployed first with `VAULT_DOMAIN` set to this domain. It owns host ports 80/443 and creates the external `webserver` network this stack joins.
 - Sufficient disk space for ciphertext, audit metadata, and other host workloads.
 
 WireGuard requires `NET_ADMIN` inside its container namespace, not privileged mode, host networking, a Docker socket, or `SYS_MODULE`. Install any missing kernel support on the host before deployment; the container fails closed if it is unavailable.
@@ -320,6 +357,8 @@ The admin **Transfer activity** meter reports quota-counted ciphertext and the c
 | [`compose.yaml`](./compose.yaml), [`Dockerfile`](./Dockerfile) | Production topology and API image |
 | [`Caddyfile`](./Caddyfile), [`Caddyfile.vpn`](./Caddyfile.vpn), [`Caddyfile.common`](./Caddyfile.common) | Public/private routing and shared proxy controls |
 | [`.env.example`](./.env.example) | Deployment configuration template |
+| [`docs/screenshots/`](./docs/screenshots/) | README screenshots from the local test stack |
+| [`SECURITY.md`](./SECURITY.md) | Vulnerability reporting policy |
 | [`.github/workflows/test.yml`](./.github/workflows/test.yml) | CI tests and vulnerability checks |
 | [`tools/generate-preview.py`](./tools/generate-preview.py) | Optional generic artwork generator; requires Pillow, not used at runtime |
 
