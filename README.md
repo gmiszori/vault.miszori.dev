@@ -2,7 +2,7 @@
 
 A self-hosted app for sharing files, folders, and text secrets through one-time or time-limited links. Everything is encrypted and decrypted in the browser, so the server only ever stores ciphertext and never sees a key, and the admin side is reachable only through a WireGuard VPN. The code was written with AI under my direction.
 
-![A recipient opens a one-time link, confirms the warning, and downloads the package while the browser decrypts it, ending on "Package downloaded"](docs/images/demo.gif)
+![A recipient opens a one-time link, confirms the warning, and downloads the package while the browser decrypts it, ending on "Package downloaded"](docs/images/download-dark.gif)
 
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 ![Go](https://img.shields.io/badge/server-Go-00ADD8)
