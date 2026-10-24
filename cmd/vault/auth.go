@@ -92,19 +92,16 @@ func (s *Server) authenticated(r *http.Request) bool {
 	return subtle.ConstantTimeCompare(userHash[:], wantUser[:])&subtle.ConstantTimeCompare(verifier[:], wantVerifier) == 1
 }
 
-// publishAuth never replaces an existing enrollment, even across server processes.
-// The file and directory are synced before reporting successful setup.
-func (s *Server) publishAuth(record authRecord) error {
-	b, err := json.Marshal(record)
-	if err != nil {
-		return err
-	}
-	f, err := os.CreateTemp(s.root, ".auth-")
+// publishNewFile never replaces an existing file, even across server processes. The file
+// and directory are synced before success; published runs as soon as the file is visible,
+// because a published file must not be retried if a later durability step fails.
+func (s *Server) publishNewFile(name string, data []byte, published func()) error {
+	f, err := os.CreateTemp(s.root, "."+strings.TrimSuffix(name, ".json")+"-")
 	if err != nil {
 		return err
 	}
 	defer os.Remove(f.Name())
-	if _, err = f.Write(b); err == nil {
+	if _, err = f.Write(data); err == nil {
 		err = f.Sync()
 	}
 	closeErr := f.Close()
@@ -114,21 +111,25 @@ func (s *Server) publishAuth(record authRecord) error {
 	if closeErr != nil {
 		return closeErr
 	}
-	if err = os.Link(f.Name(), filepath.Join(s.root, "auth.json")); err != nil {
+	if err = os.Link(f.Name(), filepath.Join(s.root, name)); err != nil {
 		return err
 	}
-	// A published enrollment must not be retried if a later durability step fails.
-	s.auth = &record
-	s.setupVerifier = [32]byte{}
+	published()
 	if err = os.Remove(f.Name()); err != nil {
 		return err
 	}
-	d, err := os.Open(s.root)
+	return syncDir(s.root)
+}
+
+func (s *Server) publishAuth(record authRecord) error {
+	b, err := json.Marshal(record)
 	if err != nil {
 		return err
 	}
-	defer d.Close()
-	return d.Sync()
+	return s.publishNewFile("auth.json", b, func() {
+		s.auth = &record
+		s.setupVerifier = [32]byte{}
+	})
 }
 
 func (s *Server) setup(w http.ResponseWriter, r *http.Request) {

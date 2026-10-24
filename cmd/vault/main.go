@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"crypto/ecdh"
 	"crypto/rand"
 	"crypto/sha256"
 	"crypto/subtle"
@@ -45,10 +46,15 @@ type Package struct {
 	ClaimHash      string          `json:"claimHash,omitempty"`
 	EncryptedName  *EncryptedName  `json:"encryptedName,omitempty"`
 	OpenedBrowser  *BrowserProfile `json:"openedBrowser,omitempty"`
-	activeReads    int
-	auditBroken    bool
-	cleanupPending bool
-	chunkInFlight  bool
+	// SealedRetrieval replaces the plaintext Opened* fields once an audit key is enrolled.
+	SealedRetrieval *SealedRecord `json:"sealedRetrieval,omitempty"`
+	activeReads     int
+	auditBroken     bool
+	auditPlain      bool
+	auditSealed     bool
+	auditSealLogged bool
+	cleanupPending  bool
+	chunkInFlight   bool
 }
 type diskPackage struct {
 	Package
@@ -69,6 +75,8 @@ type Server struct {
 	reservedBytes      int64
 	now                func() time.Time
 	labelKey           LabelKey
+	auditKey           *AuditKey
+	auditPublic        *ecdh.PublicKey
 	gate               *requestGate
 	trustedProxy       *net.IPNet
 }
@@ -192,6 +200,9 @@ func newServer(root, user, setupToken, origin string, quota int64) (*Server, err
 	if err = s.initLabelKey(); err != nil {
 		return nil, err
 	}
+	if err = s.initAuditKey(); err != nil {
+		return nil, err
+	}
 	if err = s.initAuth(setupToken); err != nil {
 		return nil, err
 	}
@@ -216,6 +227,9 @@ func (s *Server) sweep() error {
 	defer s.mu.Unlock()
 	now := s.now()
 	for id, p := range s.packages {
+		if err := s.sealAudit(p); err != nil {
+			s.auditSealFailed(p)
+		}
 		if (p.Status == "uploading" || p.Status == "ready") && !now.Before(p.ExpiresAt) {
 			if err := s.purge(p, "expired"); err != nil {
 				return err
@@ -407,7 +421,9 @@ func (s *Server) storageUsedLocked() int64 {
 func (s *Server) admin(w http.ResponseWriter, r *http.Request) {
 	path := strings.TrimPrefix(r.URL.Path, "/api/admin/")
 	if path == "config" && r.Method == "GET" {
-		writeJSON(w, 200, map[string]any{"publicOrigin": s.origin, "labelKey": s.labelKey})
+		s.mu.Lock()
+		defer s.mu.Unlock()
+		writeJSON(w, 200, map[string]any{"publicOrigin": s.origin, "labelKey": s.labelKey, "auditKey": s.auditKey})
 		return
 	}
 	if parts := strings.Split(path, "/"); r.Method == http.MethodPut && len(parts) == 4 && parts[0] == "packages" && validID(parts[1]) && parts[2] == "chunks" {
@@ -416,6 +432,10 @@ func (s *Server) admin(w http.ResponseWriter, r *http.Request) {
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if path == "audit-key" && r.Method == http.MethodPut {
+		s.enrollAuditKey(w, r)
+		return
+	}
 	if path == "packages" && r.Method == "GET" {
 		ps := make([]Package, 0, len(s.packages))
 		for _, p := range s.packages {
@@ -688,8 +708,12 @@ func (s *Server) consume(w http.ResponseWriter, r *http.Request, id string) {
 		fail(w, 429, "Too many retrievals; no package has been claimed")
 		return
 	}
-	retrieval := Retrieval{OpenedAt: s.now(), OpenedIP: s.peerIP(r), OpenedBrowser: browserProfile(r)}
-	if err := s.appendRetrieval(p, retrieval); err != nil {
+	openedAt := s.now()
+	retrieval, err := s.sealRecord(id, auditRecord{OpenedAt: &openedAt, OpenedIP: s.peerIP(r), OpenedBrowser: browserProfile(r)})
+	if err == nil {
+		err = s.appendRetrieval(p, retrieval)
+	}
+	if err != nil {
 		s.mu.Unlock()
 		fail(w, 500, "Storage unavailable")
 		return
@@ -697,9 +721,7 @@ func (s *Server) consume(w http.ResponseWriter, r *http.Request, id string) {
 	if p.OneTime {
 		p.Status = "consuming"
 	}
-	p.OpenedAt = &retrieval.OpenedAt
-	p.OpenedIP = retrieval.OpenedIP
-	p.OpenedBrowser = retrieval.OpenedBrowser
+	setLastRetrieval(p, retrieval)
 	if err := s.save(p); err != nil {
 		if p.OneTime {
 			_ = s.purge(p, "failed")

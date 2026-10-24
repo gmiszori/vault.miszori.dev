@@ -6,6 +6,7 @@ import { CHUNK_SIZE, MEMORY_LIMIT, encodeKey, decodeKey, importKey, encryptChunk
 import { archiveSize } from './zip.js';
 import { encryptName, decryptName } from './names.js';
 import { deriveAdminKeys, adminAuthorization } from './auth.js';
+import { createAuditKey } from './audit.js';
 const labelKey = { version: 1, salt: 'AAAAAAAAAAAAAAAAAAAAAA', iterations: 600000 };
 const adminPassword = 'admin:random-password:東京-strong-long';
 const namePhrase = adminPassword;
@@ -1437,6 +1438,68 @@ test('retrieval activity is paginated, rendered safely, and cleared on signout i
     assert.equal(ui.$('retrieval-dialog').open, false);
     assert.match(calls[0], /cursor=0&limit=100/);
     assert.match(calls[1], /cursor=next&limit=100/);
+  } finally { ui.restore(); }
+});
+
+// Mirrors the Go server's seal() in cmd/vault/audit.go.
+async function sealActivity(auditConfig, id, retrieval) {
+  const P256 = { name: 'ECDH', namedCurve: 'P-256' };
+  const encoder = new TextEncoder();
+  const audit = await crypto.subtle.importKey('raw', Buffer.from(auditConfig.publicKey, 'base64url'), P256, false, []);
+  const ephemeral = await crypto.subtle.generateKey(P256, true, ['deriveBits']);
+  const ephemeralKey = new Uint8Array(await crypto.subtle.exportKey('raw', ephemeral.publicKey));
+  const shared = await crypto.subtle.deriveBits({ name: 'ECDH', public: audit }, ephemeral.privateKey, 256);
+  const material = await crypto.subtle.importKey('raw', shared, 'HKDF', false, ['deriveKey']);
+  const key = await crypto.subtle.deriveKey({ name: 'HKDF', hash: 'SHA-256', salt: ephemeralKey, info: encoder.encode('vault.miszori.dev:audit-record:v1') }, material, { name: 'AES-GCM', length: 256 }, false, ['encrypt']);
+  const iv = crypto.getRandomValues(new Uint8Array(12));
+  const ciphertext = await crypto.subtle.encrypt({ name: 'AES-GCM', iv, additionalData: encoder.encode(`vault.miszori.dev:audit-record:v1:${id}`) }, key, encoder.encode(JSON.stringify(retrieval).padEnd(1024, ' ')));
+  return { version: 1, ephemeralKey: Buffer.from(ephemeralKey).toString('base64url'), iv: Buffer.from(iv).toString('base64url'), ciphertext: Buffer.from(ciphertext).toString('base64url') };
+}
+
+test('first sign-in enrolls a wrapped activity key and sealed activity is decrypted only in the browser', async () => {
+  let enrolled = null;
+  const calls = [];
+  const opened = { openedAt: '2026-01-01T00:00:00Z', openedIp: '198.51.100.7', openedBrowser: { browser: 'Firefox', os: 'Linux', deviceType: 'desktop', userAgent: 'UA' } };
+  const fetcher = async (path, options = {}) => {
+    calls.push([path, options.method]);
+    if (path.endsWith('/config')) return json({ publicOrigin: 'https://vault.example', labelKey, auditKey: enrolled });
+    if (path.endsWith('/audit-key')) { enrolled = JSON.parse(options.body); return new Response(null, { status: 204 }); }
+    if (path.includes('/retrievals?')) {
+      const other = await sealActivity(enrolled, 'pkg-other', opened);
+      return json({ retrievals: [await sealActivity(enrolled, 'pkg-123', { ...opened, openedIp: '198.51.100.8' }), other], nextCursor: '' });
+    }
+    return json({ packages: [{ id: 'pkg-123', status: 'ready', oneTime: false, retrievalCount: 2, sealedRetrieval: await sealActivity(enrolled, 'pkg-123', opened) }] });
+  };
+  let ui = await signedInAdmin(fetcher);
+  try {
+    assert.deepEqual(calls.filter(([, method]) => method === 'PUT').map(([path]) => path), ['/admin/api/audit-key']);
+    assert.deepEqual(Object.keys(enrolled).sort(), ['iv', 'publicKey', 'version', 'wrappedKey']);
+    const row = ui.$('audit-body').children[0];
+    assert.equal(row.children[4].children[1].textContent, '198.51.100.7');
+    assert.equal(row.children[4].children[2].textContent, 'Firefox / Linux / desktop');
+    await row.children[5].children.find(button => button.textContent === 'Activity (2)').dispatch('click');
+    await until(() => ui.$('retrieval-body').children.length === 2);
+    assert.equal(ui.$('retrieval-body').children[0].children[1].children[0].textContent, '198.51.100.8');
+    // A record sealed for another package does not open here.
+    assert.equal(ui.$('retrieval-body').children[1].children[0].children[0].textContent, 'Unavailable');
+    assert.match(ui.$('retrieval-status').textContent, /1 activity record\(s\) could not be decrypted/);
+  } finally { ui.restore(); }
+  calls.length = 0;
+  ui = await signedInAdmin(fetcher);
+  try {
+    assert.equal(calls.filter(([, method]) => method === 'PUT').length, 0);
+    assert.equal(ui.$('audit-body').children[0].children[4].children[1].textContent, '198.51.100.7');
+  } finally { ui.restore(); }
+});
+
+test('sealed activity is shown as unavailable when the activity key cannot be unwrapped', async () => {
+  const { config } = await createAuditKey(await crypto.subtle.importKey('raw', new Uint8Array(32), 'AES-GCM', false, ['encrypt']));
+  const ui = await signedInAdmin(async path => path.endsWith('/config')
+    ? json({ publicOrigin: 'https://vault.example', labelKey, auditKey: config })
+    : json({ packages: [{ id: 'pkg-123', status: 'consumed', retrievalCount: 1, sealedRetrieval: await sealActivity(config, 'pkg-123', { openedAt: '2026-01-01T00:00:00Z', openedIp: '198.51.100.7' }) }] }));
+  try {
+    assert.equal(ui.$('audit-body').children[0].children[4].children[0].textContent, 'Unavailable');
+    assert.match(ui.$('audit-status').textContent, /1 activity record\(s\) could not be decrypted/);
   } finally { ui.restore(); }
 });
 

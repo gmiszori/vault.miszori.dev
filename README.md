@@ -40,7 +40,7 @@ Each package is encrypted in the uploader's browser with a fresh random 256-bit 
 | --- | --- | --- |
 | Network observer | Read content, keys, or links (HTTPS) | See that a transfer happened and its approximate size |
 | Someone with a link but no `#` key, such as a preview bot | Decrypt, or claim and consume a one-time package | Load the landing page |
-| Copy of the server's disk | Decrypt content or package names; reconstruct links; claim packages from stored hashes; sign in with the stored verifier | Read sizes, timestamps, and retrieval logs (IP and browser); brute-force the admin password offline at 600,000 PBKDF2 rounds per guess |
+| Copy of the server's disk | Decrypt content, package names, or retrieval activity (IP and browser); reconstruct links; claim packages from stored hashes; sign in with the stored verifier | Read sizes, creation/expiry times, retrieval counts, and file modification times; read activity recorded before the admin first signs in after upgrading; brute-force the admin password offline at 600,000 PBKDF2 rounds per guess |
 | Malicious server operator during a compromise | Recover keys for links never opened during the compromise | Serve modified JavaScript that captures keys of links opened during the compromise |
 
 Design choices behind these properties:
@@ -48,7 +48,8 @@ Design choices behind these properties:
 - **Per-chunk integrity.** Files are split into 8 MiB chunks. Each uses a unique counter IV and AAD binding it to its package and position, so tampered, reordered, or substituted chunks fail decryption.
 - **Truncation detection.** Chunk 0 is an encrypted manifest of file names and sizes, so missing or extra chunks are detected and the server never learns file names.
 - **Proof of key possession.** Recipients prove they hold the key with an HKDF-derived claim token; the server stores only its SHA-256 hash.
-- **Password never sent.** The admin password is stretched with PBKDF2 in the browser and split by HKDF into a sign-in secret and a name-encryption key that never leaves the browser.
+- **Password never sent.** The admin password is stretched with PBKDF2 in the browser and split by HKDF into a sign-in secret and keys for package names and retrieval activity that never leave the browser.
+- **Write-only activity log.** The server encrypts each retrieval record to the administrator's public key as it writes it, and cannot decrypt it afterward.
 
 ## How this was built
 
@@ -152,9 +153,9 @@ Each profile contains a private key. Use one profile per device; never commit, p
 
 ### 5. Set up the administrator
 
-Open **https://10.13.13.1/admin** through the tunnel, or substitute the configured `VPN_BIND_IP`. Enter the setup token and choose a different, strong password of 16–1,024 Unicode characters. The browser derives separate authentication and name-encryption keys; the password itself is not sent to the API.
+Open **https://10.13.13.1/admin** through the tunnel, or substitute the configured `VPN_BIND_IP`. Enter the setup token and choose a different, strong password of 16–1,024 Unicode characters. The browser derives separate authentication, name-encryption, and activity-key wrapping keys, and enrolls the activity key pair; the password itself is not sent to the API.
 
-Enrollment is one-time. The setup token cannot reset an enrolled password and may be removed from the environment after enrollment. Preserve the `packages` volume, including `auth.json` and `label-salt`. Subsequent sign-ins use the chosen password. This is a single-admin application; WireGuard device authentication is not MFA.
+Enrollment is one-time. The setup token cannot reset an enrolled password and may be removed from the environment after enrollment. Preserve the `packages` volume, including `auth.json`, `label-salt`, and `audit-key.json`. Subsequent sign-ins use the chosen password. This is a single-admin application; WireGuard device authentication is not MFA.
 
 Both public and VPN `/` redirect to **https://gergo.miszori.dev**. Use `/admin` explicitly; recipients use generated package URLs.
 
@@ -284,21 +285,32 @@ The browser derives a 256-bit root using PBKDF2-SHA256 with 600,000 iterations a
 
 - `vault.miszori.dev:admin-auth:v1`: a 32-byte authentication value sent over HTTPS; the API stores only its SHA-256 verifier in `auth.json`.
 - `vault.miszori.dev:admin-names:v1`: a non-extractable AES-256-GCM key used only in the browser.
+- `vault.miszori.dev:admin-audit:v1`: a non-extractable AES-256-GCM key that wraps the activity private key, used only in the browser.
 
 Each private name uses a fresh random 12-byte IV, a 128-bit tag, and AAD `vault.miszori.dev:admin-name:v1:<package-id>`. Only version, IV, and ciphertext are stored; ciphertext length can reveal approximate name length. Authentication values do not reveal the name key, and stored verifiers cannot authenticate, but a stolen salt/verifier permits offline password guessing. Use a strong, unique password.
 
-Preserve `label-salt` and `auth.json`. Losing the password makes existing private names unrecoverable, not package contents, which use independent share-link keys. Names from the older separate-passphrase scheme have no migration/recovery UI and must be renamed. Sessions, passwords, keys, names, and plaintext are held in tab memory rather than browser storage.
+### Encrypted retrieval activity
+
+Retrieval records are written when a recipient claims a link, usually while no administrator is signed in, so they cannot use a password-derived key directly. Instead, on first sign-in the browser generates a P-256 ECDH key pair and sends the API its public key plus the PKCS#8 private key encrypted with the `admin-audit` key (random 12-byte IV, AAD `vault.miszori.dev:audit-key:v1:<public-key>`). The API stores both in `audit-key.json`, accepts the key once, and can never unwrap the private key.
+
+For each retrieval, the API generates an ephemeral P-256 key, derives an AES-256-GCM key with HKDF-SHA256 over the ECDH shared secret (salt: the ephemeral public key; info `vault.miszori.dev:audit-record:v1`), and encrypts the time, IP, and browser details with a random IV and AAD `vault.miszori.dev:audit-record:v1:<package-id>`. The plaintext is padded with JSON whitespace to whole 1 KiB blocks, so typical records are the same size and ciphertext length does not reveal the User-Agent length. Only the ephemeral public key, IV, and ciphertext are stored, in the retrieval log and as `sealedRetrieval` in `meta.json`. The admin browser decrypts them locally.
+
+This protects stored activity, including backups and copies of the volume. The API still sees each recipient's IP and User-Agent while handling the request, so a compromised running server can record new retrievals. Retrieval counts and file modification times remain visible. Records that cannot be decrypted show as **Unavailable**.
+
+Records written before an activity key exists stay plaintext until the next admin sign-in enrolls one. The API then rewrites each retrieval log and `meta.json` with sealed records, and retries any failed package on the 15-second sweep and at startup. Rewriting replaces the files but, as with other deletion, does not erase their old disk blocks.
+
+Preserve `label-salt`, `auth.json`, and `audit-key.json`. The API refuses to start if `audit-key.json` is missing while sealed records exist. Losing the password makes existing private names and retrieval activity unrecoverable, not package contents, which use independent share-link keys. Names from the older separate-passphrase scheme have no migration/recovery UI and must be renamed. Sessions, passwords, keys, names, and plaintext are held in tab memory rather than browser storage.
 
 ### Persistent state
 
 | Named volume | Contents |
 | --- | --- |
-| `packages` | Ciphertext, package/audit metadata, `auth.json`, and `label-salt` |
+| `packages` | Ciphertext, package/audit metadata, `auth.json`, `label-salt`, and `audit-key.json` |
 | `caddy_data`, `caddy_config` | Public certificate and Caddy state |
 | `caddy_vpn_data`, `caddy_vpn_config` | Private CA, VPN certificates, and Caddy state |
 | `wireguard_config` | Server/device identities and address reservations |
 
-Each package directory contains numbered ciphertext `.bin` files and `meta.json`: state, timestamps, IP/browser details, optional encrypted name, claim verifier, byte/record counts, and the upload-token hash while uploading. Writes are synced and atomically renamed. Retrieval logs are separate from ciphertext; metadata and logs remain until 90 days after expiry.
+Each package directory contains numbered ciphertext `.bin` files and `meta.json`: state, timestamps, the latest retrieval (sealed once an activity key is enrolled), optional encrypted name, claim verifier, byte/record counts, and the upload-token hash while uploading. Writes are synced and atomically renamed. Retrieval logs are separate from ciphertext; metadata and logs remain until 90 days after expiry.
 
 Startup reconciles state and removes incomplete uploads, interrupted one-time claims, and revoked ciphertext before accepting requests. Ready, unexpired packages survive restarts. **Run exactly one API replica**: claim and admission locks are in-process.
 
@@ -309,11 +321,11 @@ Startup reconciles state and removes incomplete uploads, interrupted one-time cl
 **Client-side encryption does not defend against a compromised server serving modified JavaScript.** Protect deployment credentials, review changes, and keep dependencies patched. An independently distributed client is needed if server-delivered code must be excluded from the trust model. No independent external security audit has been performed; automated vulnerability scans are not an audit or a security guarantee.
 
 - **Share links grant access.** Anyone holding the complete link can retrieve the content. A package ID or stored claim verifier alone cannot authorize a claim. One-time content cannot be restored after an authorized attempt fails, including network, decryption, or save failures. Retain a trusted original for irreplaceable data.
-- **Metadata remains visible.** The server learns ciphertext sizes and record boundaries, transfer timing, expiry, package format/mode, and retrieval IP/browser details. IPs may represent a proxy, NAT, or VPN; size patterns may reveal approximate file counts and sizes.
+- **Metadata remains visible.** The server learns ciphertext sizes and record boundaries, transfer timing, expiry, package format/mode, and retrieval IP/browser details; it stores the latter only in sealed records. IPs may represent a proxy, NAT, or VPN; size patterns may reveal approximate file counts and sizes.
 - **Delivered plaintext cannot be revoked.** Recipients, extensions, clipboard managers, messaging providers, screenshots, and endpoint malware are outside the application's control.
 - **Deletion is not forensic erasure.** Unlinking files does not erase SSD remnants, snapshots, backups, RAID copies, or host caches. Exclude the package volume from backups/snapshots when destruction is required. Storage failures can prevent deletion, and offline storage cannot enforce real-time expiry; monitor cleanup errors.
 - **Host access remains privileged.** Docker does not protect against a malicious host administrator. Protect the initial setup token and Docker access; use encrypted disks, encrypted/disabled swap, and disabled core dumps.
-- **Avoid additional data collection.** Caddy access logging is disabled. Do not add request-body logging, key/URL telemetry, analytics, external error collection, or third-party scripts.
+- **Avoid additional data collection.** Caddy access logging is disabled, and the public proxy's error log drops client IPs and User-Agent headers. Do not add request-body logging, key/URL telemetry, analytics, external error collection, or third-party scripts.
 
 HTTPS protects transport, AES-GCM protects stored content, and the VPN/interface boundary restricts administration. CSP, same-origin checks, cache restrictions, and throttling provide additional safeguards, not absolute protection. Host patching, firewall policy, access-layer MFA where applicable, backup policy, and independent review remain operator responsibilities.
 
@@ -478,7 +490,7 @@ Restarting discards incomplete uploads and interrupted one-time claims. Ready, u
 
 There is no online password change/reset flow. Changing environment variables does not change an enrolled password or its name key.
 
-Deliberate offline re-enrollment requires stopping the API, removing only `auth.json`, preserving `label-salt`, and supplying a new setup token. A different password cannot decrypt previous private names; existing package share links use independent keys and remain unaffected. Protect audit records as sensitive personal data and disclose their collection and retention.
+Deliberate offline re-enrollment requires stopping the API, removing `auth.json` and `audit-key.json`, preserving `label-salt`, and supplying a new setup token. The API refuses to start with `audit-key.json` but no `auth.json`, because the new password could not unwrap it. A different password cannot decrypt previous private names or retrieval activity; existing package share links use independent keys and remain unaffected. Protect audit records as sensitive personal data and disclose their collection and retention.
 
 ## License
 

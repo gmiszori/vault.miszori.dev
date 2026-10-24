@@ -10,6 +10,10 @@
 				request>headers>X-Upload-Token delete
 				request>headers>Authorization delete
 				request>headers>Cookie delete
+				# Recipient addresses and browsers are kept only in sealed retrieval records.
+				request>remote_ip delete
+				request>client_ip delete
+				request>headers>User-Agent delete
 			}
 		}
 	}

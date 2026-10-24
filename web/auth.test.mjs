@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { pbkdf2Sync, hkdfSync } from 'node:crypto';
 import { deriveAdminKeys, adminAuthorization, validateAuthConfig } from './auth.js';
 import { encryptName, decryptName } from './names.js';
+import { createAuditKey, unwrapAuditKey } from './audit.js';
 
 const salt = Buffer.from('0123456789abcdef');
 const config = { version: 1, salt: salt.toString('base64url'), iterations: 600000 };
@@ -31,6 +32,13 @@ test('password-derived authentication and names match independent PBKDF2/HKDF do
   const wrong = await deriveAdminKeys('another strong random password', config);
   assert.notEqual(wrong.authentication, keys.authentication);
   await assert.rejects(decryptName(wrong.nameKey, 'package-123', envelope));
+  const audit = Buffer.from(hkdfSync('sha256', root, salt, 'vault.miszori.dev:admin-audit:v1', 32));
+  assert.equal(keys.auditWrapKey.extractable, false);
+  await assert.rejects(crypto.subtle.exportKey('raw', keys.auditWrapKey));
+  const { config: auditConfig } = await createAuditKey(keys.auditWrapKey);
+  await unwrapAuditKey(await crypto.subtle.importKey('raw', audit, 'AES-GCM', false, ['decrypt']), auditConfig);
+  await assert.rejects(unwrapAuditKey(keys.nameKey, auditConfig));
+  await assert.rejects(unwrapAuditKey(wrong.auditWrapKey, auditConfig));
   const header = adminAuthorization('admin-é', keys.authentication);
   assert.equal(Buffer.from(header.slice(6), 'base64').toString('utf8'), `admin-é:${auth.toString('base64url')}`);
   assert.ok(!header.includes(password));

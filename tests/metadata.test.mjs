@@ -57,6 +57,8 @@ test('admin labels stay encrypted, private, and independent of the package paylo
     assert.deepEqual(Object.keys(publicInfo).sort(), ['expiresAt', 'format', 'oneTime', 'status']);
     assert.equal((await fetch(`${pub}/names.js`)).status, 404);
     assert.equal((await fetch(`${admin}/names.js`)).status, 200);
+    assert.equal((await fetch(`${pub}/audit.js`)).status, 404);
+    assert.equal((await fetch(`${admin}/audit.js`)).status, 200);
     const claim = await fetch(`${pub}/api/packages/${p.id}/consume`, { method: 'POST', headers: p.claimHeaders });
     assert.equal(claim.status, 200); assert.equal((await claim.arrayBuffer()).byteLength, 36);
     assert.deepEqual((await entry(p.id)).encryptedName, envelope, 'names remain available in the historical audit');

@@ -23,35 +23,38 @@ type Retrieval struct {
 }
 
 type retrievalPage struct {
-	Retrievals []Retrieval `json:"retrievals"`
-	NextCursor string      `json:"nextCursor"`
+	Retrievals []auditRecord `json:"retrievals"`
+	NextCursor string        `json:"nextCursor"`
 }
 
-func legacyRetrieval(p *Package) Retrieval {
-	return Retrieval{OpenedAt: *p.OpenedAt, OpenedIP: p.OpenedIP, OpenedBrowser: p.OpenedBrowser}
+func legacyRetrieval(p *Package) auditRecord {
+	at := *p.OpenedAt
+	return auditRecord{OpenedAt: &at, OpenedIP: p.OpenedIP, OpenedBrowser: p.OpenedBrowser}
 }
 
-func readRetrieval(reader *bufio.Reader) (Retrieval, int64, error) {
+func readRetrieval(reader *bufio.Reader) (auditRecord, int64, error) {
 	line, err := reader.ReadSlice('\n')
 	if err != nil {
 		if len(line) > 0 && err == io.EOF {
 			err = io.ErrUnexpectedEOF
 		}
-		return Retrieval{}, 0, err
+		return auditRecord{}, 0, err
 	}
-	var record Retrieval
+	var record auditRecord
 	err = json.Unmarshal(line, &record)
-	if err == nil && record.OpenedAt.IsZero() {
+	if err == nil && !record.valid() {
 		err = errors.New("invalid retrieval record")
 	}
 	return record, int64(len(line)), err
 }
 
-// Rebuild from the durable log rather than a metadata count that may lag a crash.
+// Rebuild from the durable log rather than a metadata count that may lag a crash,
+// noting whether plaintext records remain to be sealed.
 func (s *Server) restoreRetrievalCount(p *Package) error {
+	p.auditPlain, p.auditSealed = p.OpenedAt != nil, p.SealedRetrieval != nil
 	f, err := os.Open(filepath.Join(s.dir(p.ID), retrievalLogName))
 	if errors.Is(err, os.ErrNotExist) {
-		if p.RetrievalCount > 1 {
+		if p.RetrievalCount > 1 || p.SealedRetrieval != nil {
 			return errors.New("retrieval log missing")
 		}
 		p.RetrievalCount = 0
@@ -68,7 +71,7 @@ func (s *Server) restoreRetrievalCount(p *Package) error {
 	p.RetrievalCount = 0
 	reader := bufio.NewReaderSize(f, maxRetrievalRecord)
 	for {
-		_, _, err = readRetrieval(reader)
+		record, _, err := readRetrieval(reader)
 		if err == io.EOF {
 			if p.RetrievalCount < expected {
 				return errors.New("retrieval log truncated")
@@ -78,12 +81,17 @@ func (s *Server) restoreRetrievalCount(p *Package) error {
 		if err != nil {
 			return err
 		}
+		if record.SealedRecord != nil {
+			p.auditSealed = true
+		} else {
+			p.auditPlain = true
+		}
 		p.RetrievalCount++
 	}
 }
 
 // Called under s.mu. No ciphertext may be served until both file and directory sync succeed.
-func (s *Server) appendRetrieval(p *Package, record Retrieval) error {
+func (s *Server) appendRetrieval(p *Package, record auditRecord) error {
 	if p.auditBroken {
 		return errors.New("retrieval audit unavailable")
 	}
@@ -109,12 +117,16 @@ func (s *Server) appendRetrieval(p *Package, record Retrieval) error {
 	}
 	data = append(data, '\n')
 	added := int64(1)
+	legacy := auditRecord{}
 	if info.Size() == 0 && p.OpenedAt != nil {
-		legacy, err := json.Marshal(legacyRetrieval(p))
+		if legacy, err = s.sealRecord(p.ID, legacyRetrieval(p)); err != nil {
+			return err
+		}
+		line, err := json.Marshal(legacy)
 		if err != nil {
 			return err
 		}
-		data = append(append(legacy, '\n'), data...)
+		data = append(append(line, '\n'), data...)
 		added++
 	}
 	if _, err = f.Write(data); err == nil {
@@ -141,6 +153,13 @@ func (s *Server) appendRetrieval(p *Package, record Retrieval) error {
 		p.RetrievalCount = added
 	} else {
 		p.RetrievalCount += added
+	}
+	for _, written := range []auditRecord{legacy, record} {
+		if written.SealedRecord != nil {
+			p.auditSealed = true
+		} else if written.OpenedAt != nil {
+			p.auditPlain = true
+		}
 	}
 	if err = f.Close(); err != nil {
 		p.auditBroken = true
@@ -180,7 +199,7 @@ func (s *Server) retrievals(w http.ResponseWriter, r *http.Request, p *Package) 
 			return
 		}
 	}
-	page := retrievalPage{Retrievals: make([]Retrieval, 0, limit)}
+	page := retrievalPage{Retrievals: make([]auditRecord, 0, limit)}
 	f, err := os.Open(filepath.Join(s.dir(p.ID), retrievalLogName))
 	if errors.Is(err, os.ErrNotExist) {
 		if p.RetrievalCount > 1 {

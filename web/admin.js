@@ -2,12 +2,14 @@ import { CHUNK_SIZE, MAX_BYTES, MAX_FILES, encodeKey, importKey, encryptChunk, s
 
 import { validateLabelKey, validateName, encryptName, decryptName } from './names.js';
 import { validateAuthConfig, deriveAdminKeys, adminAuthorization } from './auth.js';
+import { createAuditKey, unwrapAuditKey, openRecord } from './audit.js';
 
 const $ = id => document.getElementById(id);
 let authConfig;
 let authLoading = false;
 let authLoadAttempt = 0;
 let nameKey = null;
+let auditKey = null;
 let nameEpoch = 0;
 let auditPackages = [];
 let renameTarget = null;
@@ -32,6 +34,7 @@ function scrubNames() {
 function clearNames() {
   ++nameEpoch;
   nameKey = null;
+  auditKey = null;
   auditPackages = [];
   $('package-name').value = '';
   $('package-name').disabled = true;
@@ -142,6 +145,32 @@ function showLoginMode() {
   $('login-button').textContent = setup ? 'Set password and sign in' : 'Sign in';
 }
 
+// Enrolls the activity key on first sign-in. A failure never blocks sign-in: until a later
+// sign-in enrolls, the server keeps recording activity unsealed, and sealed records show as unavailable.
+async function openAuditKey(wrapKey, stored) {
+  // Undefined means a server without activity sealing; null means no key is enrolled yet.
+  if (stored === undefined) return null;
+  try {
+    if (stored) return await unwrapAuditKey(wrapKey, stored);
+    const created = await createAuditKey(wrapKey);
+    try {
+      await api('/audit-key', { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(created.config) });
+      return created.privateKey;
+    } catch {
+      // Another session may have enrolled first; use whichever key the server kept.
+      const current = (await (await api('/config')).json()).auditKey;
+      return current ? await unwrapAuditKey(wrapKey, current) : null;
+    }
+  } catch { return null; }
+}
+
+// Sealed records need the activity key; plaintext ones predate its enrollment.
+async function readActivity(id, record) {
+  if (!record || record.ciphertext === undefined) return record;
+  if (!auditKey) throw new Error('Activity key unavailable.');
+  return openRecord(auditKey, id, record);
+}
+
 async function loadAuth() {
   if (authLoading) return;
   authLoading = true;
@@ -219,6 +248,9 @@ async function login(event) {
     if ((origin.protocol !== 'https:' && !loopback) || origin.username || origin.password || origin.pathname !== '/' || origin.search || origin.hash) throw new Error('The server must provide a valid HTTPS public origin (HTTP is allowed only on localhost for development).');
     const labelKey = validateLabelKey(config.labelKey);
     if (labelKey.salt !== authConfig.labelKey.salt) throw new Error('Encryption settings changed. Reload before signing in.');
+    const activityKey = await openAuditKey(keys.auditWrapKey, config.auditKey);
+    if (attempt !== loginAttempt) return;
+    auditKey = activityKey;
     nameKey = keys.nameKey;
     keys.nameKey = null;
     ++nameEpoch;
@@ -237,7 +269,7 @@ async function login(event) {
     message('login-status', error.message || 'Could not connect. Check the VPN and try again.', true);
   } finally {
     setupToken = '';
-    if (keys) { keys.authentication = ''; keys.nameKey = null; }
+    if (keys) { keys.authentication = ''; keys.nameKey = null; keys.auditWrapKey = null; }
     if (attempt === loginAttempt) $('login-button').disabled = !authConfig || !window.isSecureContext || !crypto.subtle;
   }
 }
@@ -502,11 +534,16 @@ async function loadRetrievals() {
     if (session !== loginAttempt || attempt !== retrievalAttempt || id !== retrievalTarget) return;
     if (!Array.isArray(data.retrievals) || data.retrievals.length > 100 || typeof data.nextCursor !== 'string') throw new Error('Invalid activity response.');
     const fragment = document.createDocumentFragment();
+    let unreadable = 0;
     for (const item of data.retrievals) {
+      let entry = null;
+      try { entry = await readActivity(id, item); }
+      catch { ++unreadable; }
+      if (session !== loginAttempt || attempt !== retrievalAttempt || id !== retrievalTarget) return;
       const row = document.createElement('tr');
-      cell(row, date(item.openedAt));
-      cell(row, typeof item.openedIp === 'string' ? item.openedIp : '—');
-      const profile = item.openedBrowser;
+      cell(row, entry ? date(entry.openedAt) : 'Unavailable');
+      cell(row, typeof entry?.openedIp === 'string' ? entry.openedIp : '—');
+      const profile = entry?.openedBrowser;
       const details = cell(row, profile ? [profile.browser, profile.os, profile.deviceType].map(value => typeof value === 'string' ? value : '—').join(' / ') : '—');
       if (typeof profile?.userAgent === 'string') details.title = profile.userAgent;
       fragment.append(row);
@@ -515,6 +552,7 @@ async function loadRetrievals() {
     retrievalCursor = data.nextCursor;
     $('retrieval-next').hidden = !retrievalCursor;
     message('retrieval-status', data.retrievals.length ? 'Started transfers (including interrupted downloads).' : 'No retrievals.');
+    if (unreadable) message('retrieval-status', `${unreadable} activity record(s) could not be decrypted.`, true);
   } catch (error) {
     if (session === loginAttempt && attempt === retrievalAttempt) message('retrieval-status', error.message || 'Could not load activity.', true);
   } finally {
@@ -544,7 +582,7 @@ function packageActions(item, knownStatus, epoch) {
     });
     action.append(button);
   }
-  if ((item.retrievalCount > 0 || item.openedAt) && /^[A-Za-z0-9_-]{1,128}$/.test(id)) {
+  if ((item.retrievalCount > 0 || item.openedAt || item.sealedRetrieval) && /^[A-Za-z0-9_-]{1,128}$/.test(id)) {
     const button = document.createElement('button');
     button.type = 'button';
     button.className = 'text-button';
@@ -586,6 +624,7 @@ async function renderList() {
   const packages = auditPackages;
   const fragment = document.createDocumentFragment();
   let unreadable = 0;
+  let unreadableActivity = 0;
   const statuses = new Set(['uploading', 'ready', 'consuming', 'consumed', 'expired', 'deleted', 'failed']);
   for (const item of [...packages].sort((a, b) => (Date.parse(b.createdAt) || 0) - (Date.parse(a.createdAt) || 0))) {
     const row = document.createElement('tr');
@@ -597,6 +636,11 @@ async function renderList() {
         try { label = await decryptName(nameKey, id, item.encryptedName); }
         catch { ++unreadable; }
       }
+    }
+    let last = item;
+    if (item.sealedRetrieval) {
+      try { last = await readActivity(id, item.sealedRetrieval); }
+      catch { last = null; ++unreadableActivity; }
     }
     if (epoch !== nameEpoch || session !== loginAttempt) return;
     const packageCell = cell(row, label);
@@ -615,10 +659,10 @@ async function renderList() {
     row.append(td);
     cell(row, date(item.createdAt), `Expires ${date(item.expiresAt)}`);
     cell(row, Number.isSafeInteger(item.bytes) && item.bytes >= 0 ? formatBytes(item.bytes) : '—', `${Number.isSafeInteger(item.chunks) ? item.chunks.toLocaleString() : '—'} records`);
-    const opened = cell(row, date(item.openedAt), item.openedIp || 'Not opened');
+    const opened = last ? cell(row, date(last.openedAt), last.openedIp || 'Not opened') : cell(row, 'Unavailable', 'Activity could not be decrypted');
     const profile = document.createElement('span');
     profile.className = 'table-secondary';
-    const browser = item.openedBrowser;
+    const browser = last?.openedBrowser;
     profile.textContent = browser ? [browser.browser, browser.os, browser.deviceType].map(value => typeof value === 'string' && value ? value : '—').join(' / ') : '—';
     if (typeof browser?.userAgent === 'string') profile.title = browser.userAgent;
     opened.append(profile);
@@ -633,6 +677,7 @@ async function renderList() {
   $('audit-empty').hidden = !!packages.length;
   message('audit-status', `${packages.length.toLocaleString()} ${packages.length === 1 ? 'transfer' : 'transfers'} · Updated ${new Date().toLocaleTimeString()}`);
   if (unreadable) message('audit-status', `${packages.length} transfers · ${unreadable} name(s) unavailable. Rename to replace them; existing names were not changed.`, true);
+  if (unreadableActivity) message('audit-status', `${packages.length} transfers · ${unreadableActivity} activity record(s) could not be decrypted.${unreadable ? ` ${unreadable} name(s) unavailable.` : ''}`, true);
 }
 
 $('delete-dialog').addEventListener('close', async () => {

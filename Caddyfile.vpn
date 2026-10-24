@@ -67,7 +67,7 @@ https://{$VPN_BIND_IP:10.13.13.1} {
 		templates
 		file_server
 	}
-	@assets path /styles.css /admin.js /public.js /crypto.js /zip.js /names.js /auth.js /download.js /download-worker.js /share-preview.png /favicon.svg
+	@assets path /styles.css /admin.js /public.js /crypto.js /zip.js /names.js /audit.js /auth.js /download.js /download-worker.js /share-preview.png /favicon.svg
 	handle @assets {
 		file_server
 	}

@@ -9,6 +9,10 @@
 				request>headers>X-Upload-Token delete
 				request>headers>Authorization delete
 				request>headers>Cookie delete
+				# Recipient addresses and browsers are kept only in sealed retrieval records.
+				request>remote_ip delete
+				request>client_ip delete
+				request>headers>User-Agent delete
 			}
 		}
 	}
@@ -105,7 +109,7 @@
 		templates
 		file_server
 	}
-	@assets path /styles.css /admin.js /public.js /crypto.js /zip.js /names.js /auth.js /download.js /download-worker.js /share-preview.png /favicon.svg
+	@assets path /styles.css /admin.js /public.js /crypto.js /zip.js /names.js /audit.js /auth.js /download.js /download-worker.js /share-preview.png /favicon.svg
 	handle @assets {
 		file_server
 	}

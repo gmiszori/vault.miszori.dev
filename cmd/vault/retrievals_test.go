@@ -405,7 +405,8 @@ func TestLegacyOneTimeDefaultAndAuditFallback(t *testing.T) {
 	p := restarted.packages[id]
 	p.OneTime, p.Status = false, "ready"
 	for i := 0; i < 2; i++ {
-		if err := restarted.appendRetrieval(p, Retrieval{OpenedAt: time.Now(), OpenedIP: "192.0.2.5"}); err != nil {
+		openedAt := time.Now()
+		if err := restarted.appendRetrieval(p, auditRecord{OpenedAt: &openedAt, OpenedIP: "192.0.2.5"}); err != nil {
 			t.Fatal(err)
 		}
 	}

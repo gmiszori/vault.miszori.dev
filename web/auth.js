@@ -27,7 +27,8 @@ export async function deriveAdminKeys(password, config) {
     root.fill(0);
     authentication = new Uint8Array(await crypto.subtle.deriveBits({ name: 'HKDF', hash: 'SHA-256', salt, info: encoder.encode('vault.miszori.dev:admin-auth:v1') }, hkdf, 256));
     const nameKey = await crypto.subtle.deriveKey({ name: 'HKDF', hash: 'SHA-256', salt, info: encoder.encode('vault.miszori.dev:admin-names:v1') }, hkdf, { name: 'AES-GCM', length: 256 }, false, ['encrypt', 'decrypt']);
-    return { authentication: encode(authentication), nameKey };
+    const auditWrapKey = await crypto.subtle.deriveKey({ name: 'HKDF', hash: 'SHA-256', salt, info: encoder.encode('vault.miszori.dev:admin-audit:v1') }, hkdf, { name: 'AES-GCM', length: 256 }, false, ['encrypt', 'decrypt']);
+    return { authentication: encode(authentication), nameKey, auditWrapKey };
   } finally {
     bytes.fill(0);
     root?.fill(0);
