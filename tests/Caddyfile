@@ -52,7 +52,9 @@
 	import headers
 	root * /srv
 	handle / {
-		redir https://gergo.miszori.dev 302
+		rewrite * /home.html
+		templates
+		file_server
 	}
 	handle /local-download/* {
 		respond "" 404
@@ -70,7 +72,7 @@
 		templates
 		file_server
 	}
-	@assets path /styles.css /public.js /crypto.js /zip.js /download.js /download-worker.js /share-preview.png /favicon.svg
+	@assets path /styles.css /public.js /crypto.js /zip.js /download.js /download-worker.js /share-preview.png /favicon.svg /fonts/inter.woff2 /fonts/jetbrains-mono.woff2
 	handle @assets {
 		file_server
 	}
@@ -83,7 +85,7 @@
 	import headers
 	root * /srv
 	handle / {
-		redir https://gergo.miszori.dev 302
+		redir /admin 302
 	}
 	handle /local-download/* {
 		respond "" 404
@@ -109,7 +111,7 @@
 		templates
 		file_server
 	}
-	@assets path /styles.css /admin.js /public.js /crypto.js /zip.js /names.js /audit.js /auth.js /download.js /download-worker.js /share-preview.png /favicon.svg
+	@assets path /styles.css /admin.js /public.js /crypto.js /zip.js /names.js /audit.js /auth.js /download.js /download-worker.js /share-preview.png /favicon.svg /fonts/inter.woff2 /fonts/jetbrains-mono.woff2
 	handle @assets {
 		file_server
 	}

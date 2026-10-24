@@ -38,7 +38,7 @@ node --test tests/*.test.mjs
 docker compose -p vault-test -f tests/compose.yaml down -v
 ```
 
-While it is running, the admin UI is `http://localhost:18081/admin`; public links use `http://localhost:18080/package/...#key`. The bare root redirects to https://gergo.miszori.dev.
+While it is running, the admin UI is `http://localhost:18081/admin`; public links use `http://localhost:18080/package/...#key`. The public root serves the homepage; the admin root redirects to `/admin`.
 
 Tests automatically enroll username `admin`, password `integration-admin-password-with-zero-server-knowledge`, and setup token `integration-setup-token-never-deploy-1234567890`. **These fixed credentials are test-only and must never be deployed.** For manual first-setup testing, use the same values before the suite or start with a fresh disposable test volume.
 

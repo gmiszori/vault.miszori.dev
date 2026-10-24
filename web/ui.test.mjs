@@ -761,13 +761,13 @@ test('an insecure admin page never sends credentials', async () => {
   } finally { ui.restore(); }
 });
 
-test('entrypoints use the exact brand, dark scheme, and task-focused copy', async () => {
+test('entrypoints use the exact brand, system color scheme, and task-focused copy', async () => {
   for (const name of ['index', 'admin']) {
     const html = await readFile(new URL(`./${name}.html`, import.meta.url), 'utf8');
     assert.match(html, /<title>vault\.miszori\.dev<\/title>/);
     assert.doesNotMatch(html, /<header|class="brand"/);
     assert.doesNotMatch(html, /<a\b[^>]*\bhref="\/"/);
-    assert.match(html, /<meta name="color-scheme" content="dark">/);
+    assert.match(html, /<meta name="color-scheme" content="light dark">/);
     assert.doesNotMatch(html, /A little less|Less exposure|Send it\.|Good things|Private by design|<footer|class="(?:hero|principles|privacy-panel|vault-art|workspace-badge)"/i);
     if (name === 'admin') assert.match(html, /Server logs include IP addresses/);
   }
@@ -825,9 +825,11 @@ test('messaging previews advertise only the text banner with no square touch-ima
   assert.match(html, /name="twitter:description" content=""/);
 });
 
-test('dark palette provides readable text, blue controls and keyboard focus', async () => {
+test('light and dark palettes provide readable text, indigo controls and keyboard focus', async () => {
   const css = await readFile(new URL('./styles.css', import.meta.url), 'utf8');
-  const colors = Object.fromEntries([...css.matchAll(/--([a-z-]+): (#[0-9a-f]{3,6});/g)].map(([, name, value]) => [name, value]));
+  const palette = block => Object.fromEntries([...block.matchAll(/--([a-z-]+): (#[0-9a-f]{3,6});/g)].map(([, name, value]) => [name, value]));
+  const light = palette(/:root \{([^}]+)\}/.exec(css)[1]);
+  const dark = palette(/@media \(prefers-color-scheme: dark\) \{\s*:root \{([^}]+)\}/.exec(css)[1]);
   function luminance(color) {
     if (color.length === 4) color = '#' + [...color.slice(1)].map(char => char + char).join('');
     const rgb = color.slice(1).match(/../g).map(hex => {
@@ -840,17 +842,25 @@ test('dark palette provides readable text, blue controls and keyboard focus', as
     const levels = [luminance(a), luminance(b)].sort((x, y) => y - x);
     return (levels[0] + 0.05) / (levels[1] + 0.05);
   }
-  assert.match(css, /color-scheme: dark/);
-  for (const name of ['background', 'surface', 'input']) assert.equal(colors[name], '#000');
-  assert.equal(colors.text, '#fff');
-  for (const name of ['muted', 'line', 'warning']) assert.match(colors[name], /^#([a-f0-9])\1{2}(?:\1{3})?$/);
   const channels = value => value.slice(1).match(/../g).map(channel => parseInt(channel, 16));
-  const danger = channels(colors.danger), success = channels(colors.success);
-  assert.ok(danger[0] > danger[1] && danger[0] > danger[2], 'danger is red');
-  assert.ok(success[1] > success[0] && success[1] > success[2], 'ready is green');
+  assert.match(css, /color-scheme: light dark/);
+  for (const [colors, background, text] of [[light, '#ffffff', '#000000'], [dark, '#000000', '#ffffff']]) {
+    for (const name of ['background', 'surface', 'input']) assert.equal(colors[name], background);
+    assert.equal(colors.text, text);
+    const danger = channels(colors.danger), success = channels(colors.success);
+    assert.ok(danger[0] > danger[1] && danger[0] > danger[2], 'danger is red');
+    assert.ok(success[1] > success[0] && success[1] > success[2], 'ready is green');
+    for (const name of ['text', 'muted', 'sub', 'danger', 'warning', 'success', 'pending', 'focus']) {
+      assert.ok(contrast(colors[name], colors.surface) >= 4.5, `${name} has readable contrast on ${background}`);
+    }
+    assert.ok(contrast(colors.line, colors.surface) >= 3, `control borders are visible on ${background}`);
+    for (const name of ['blue', 'blue-hover']) {
+      assert.ok(contrast('#ffffff', colors[name]) >= 4.5, `${name} has readable button contrast`);
+      assert.ok(parseInt(colors[name].slice(5, 7), 16) > parseInt(colors[name].slice(1, 3), 16));
+    }
+  }
   assert.match(css, /\.status-ready\s*\{[^}]*color: var\(--success\)/);
-  assert.match(css, /\.status-downloading\s*\{[^}]*color: #facc15/);
-  assert.ok(contrast('#facc15', colors.surface) >= 4.5, 'downloading yellow has readable contrast');
+  assert.match(css, /\.status-downloading\s*\{[^}]*color: var\(--pending\)/);
   assert.match(css, /#package-description:empty\s*\{[^}]*display: none/);
   for (const selector of ['progress.is-complete', 'progress.is-complete::-webkit-progress-value', 'progress.is-complete::-moz-progress-bar']) {
     assert.ok(css.includes(`${selector} { ${selector === 'progress.is-complete' ? 'accent-color' : 'background'}: var(--success); }`));
@@ -858,13 +868,7 @@ test('dark palette provides readable text, blue controls and keyboard focus', as
   assert.match(css, /\.status-unavailable\s*\{[^}]*color: var\(--danger\)/);
   assert.match(css, /\.notice\.one-time-warning\s*\{[^}]*border-color: var\(--danger\); color: var\(--danger\)/);
   assert.match(css, /\.notice\.one-time-warning strong\s*\{[^}]*color: var\(--danger\)/);
-  for (const name of ['text', 'muted', 'danger', 'warning', 'success', 'focus']) {
-    assert.ok(contrast(colors[name], colors.surface) >= 4.5, `${name} has readable contrast`);
-  }
-  for (const name of ['blue', 'blue-hover']) {
-    assert.ok(contrast('#ffffff', colors[name]) >= 4.5, `${name} has readable button contrast`);
-    assert.ok(parseInt(colors[name].slice(5, 7), 16) > parseInt(colors[name].slice(1, 3), 16));
-  }
+  assert.match(css, /@media \(prefers-reduced-motion: reduce\)/);
   assert.match(css, /:focus-visible\s*\{[^}]*outline: 3px solid var\(--focus\)/);
   assert.match(css, /\.file-picker:focus-within/);
   assert.match(css, /@media \(max-width: 540px\)/);
@@ -886,14 +890,30 @@ test('mobile audit overflow stays inside its scroller, including positioned acce
   assert.doesNotMatch(css, /(?:html|body)\s*\{[^}]*overflow(?:-x)?:\s*(?:hidden|clip)/);
 });
 
-test('production and test roots consistently redirect to the personal site', async () => {
-  for (const [file, count] of [['../Caddyfile', 2], ['../Caddyfile.vpn', 2], ['../tests/Caddyfile', 2]]) {
+test('public roots serve the homepage and VPN roots redirect to the admin page', async () => {
+  const home = 'rewrite * /home.html templates file_server';
+  for (const [file, expected] of [['../Caddyfile', [home]], ['../Caddyfile.vpn', ['redir https://{$VPN_BIND_IP:10.13.13.1}/admin 302', 'redir /admin 302']], ['../tests/Caddyfile', [home, 'redir /admin 302']]]) {
     const config = await readFile(new URL(file, import.meta.url), 'utf8');
-    const roots = [...config.matchAll(/handle \/ \{([^}]+)\}/g)];
-    assert.equal(roots.length, count);
-    for (const [, body] of roots) assert.equal(body.trim(), 'redir https://gergo.miszori.dev 302');
+    const roots = [...config.matchAll(/handle \/ \{\n([\s\S]*?)\n\t\}/g)].map(([, body]) => body.trim().replace(/\s+/g, ' '));
+    assert.deepEqual(roots, expected, file);
     assert.match(config, /handle (?:@page|\/package\/\*)/);
+    assert.match(config, /\/fonts\/inter\.woff2 \/fonts\/jetbrains-mono\.woff2/);
   }
+});
+
+test('homepage explains the encryption flow without scripts, inline styles, or admin links', async () => {
+  const html = await readFile(new URL('./home.html', import.meta.url), 'utf8');
+  assert.match(html, /<title>vault\.miszori\.dev<\/title>/);
+  assert.match(html, /<h1 class="home-title">vault\.miszori\.dev<\/h1>/);
+  assert.match(html, /script-src 'none'/);
+  assert.ok(!/<script|<style|\son\w+=|\sstyle=/i.test(html));
+  assert.doesNotMatch(html, /href="\/admin/);
+  for (const zone of ['Sender', 'Server', 'Recipient']) assert.match(html, new RegExp(`<h3 class="zone-head"><span>${zone}</span>`));
+  assert.match(html, /<span class="zone-tag">VPN only<\/span>/);
+  for (const step of ['Your data', 'Encrypt', 'Ciphertext', 'Decrypt', 'Delivered']) assert.match(html, new RegExp(`<h4>${step}</h4>`));
+  assert.match(html, /#&lt;key&gt;/);
+  const references = [...html.matchAll(/(?:src|href)="([^"]+)"/g)].map(match => match[1]);
+  assert.deepEqual(references, ['/favicon.svg', '/styles.css', '#main', 'https://github.com/gmiszori/vault.miszori.dev']);
 });
 
 test('VPN admin uses a local IP certificate and redirects to the IP without changing the public origin', async () => {

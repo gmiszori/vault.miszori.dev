@@ -60,10 +60,16 @@ test('Caddy isolates admin routes and supplies privacy headers', async () => {
   for (const path of ['/admin', '/admin/', '/admin.html', '/admin.js', '/api/admin/packages', '/admin/api/packages', '/api/admin']) {
     const r = await fetch(pub + path, { headers: auth }); assert.equal(r.status, 404, path);
   }
+  const homepage = await fetch(pub, { redirect: 'manual' });
+  assert.equal(homepage.status, 200);
+  assert.match(await homepage.text(), /<h1 class="home-title">vault\.miszori\.dev<\/h1>/);
+  const adminRoot = await fetch(admin, { redirect: 'manual' });
+  assert.equal(adminRoot.status, 302);
+  assert.equal(adminRoot.headers.get('location'), '/admin');
   for (const origin of [pub, admin]) {
-    const root = await fetch(origin, { redirect: 'manual' });
-    assert.equal(root.status, 302);
-    assert.equal(root.headers.get('location'), 'https://gergo.miszori.dev');
+    const font = await fetch(`${origin}/fonts/inter.woff2`);
+    assert.equal(font.status, 200);
+    assert.match(font.headers.get('content-type'), /font\/woff2/);
     const favicon = await fetch(`${origin}/favicon.svg`);
     assert.equal(favicon.status, 200);
     assert.match(favicon.headers.get('content-type'), /image\/svg\+xml/);

@@ -80,7 +80,7 @@ Open **https://10.13.13.1/admin** through the tunnel, or substitute the configur
 
 Enrollment is one-time. The setup token cannot reset an enrolled password and may be removed from the environment after enrollment. Preserve the `packages` volume, including `auth.json`, `label-salt`, and `audit-key.json`. Subsequent sign-ins use the chosen password. This is a single-admin application; WireGuard device authentication is not MFA.
 
-Both public and VPN `/` redirect to **https://gergo.miszori.dev**. Use `/admin` explicitly; recipients use generated package URLs.
+The public `/` serves a homepage that explains how a package is encrypted and shared, and the VPN `/` redirects to `/admin`. Recipients use generated package URLs.
 
 ## 6. Verify access boundaries
 

@@ -160,7 +160,8 @@ test('production VPN IP serves admin while public listeners abort IP and unknown
     assert.equal(redirect.status, 308);
     assert.equal(redirect.headers.get('location'), 'https://10.0.0.1/admin?test=1');
     const home = await request(publicPort, '/', 'vault.example', ca);
-    assert.equal(home.headers.location, 'https://gergo.miszori.dev');
+    assert.equal(home.status, 200);
+    assert.match(home.body, /How a package travels/);
     const packagePage = await request(publicPort, '/package/example', 'vault.example', ca);
     assert.equal(packagePage.status, 200);
     assert.match(packagePage.body, /Checking package availability/);
