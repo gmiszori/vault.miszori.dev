@@ -892,7 +892,7 @@ test('mobile audit overflow stays inside its scroller, including positioned acce
 
 test('public roots serve the homepage and VPN roots redirect to the admin page', async () => {
   const home = 'rewrite * /home.html templates file_server';
-  for (const [file, expected] of [['../Caddyfile', [home]], ['../Caddyfile.vpn', ['redir https://{$VPN_BIND_IP:10.13.13.1}/admin 302', 'redir /admin 302']], ['../tests/Caddyfile', [home, 'redir /admin 302']]]) {
+  for (const [file, expected] of [['../Caddyfile', [home]], ['../Caddyfile.vpn', ['redir https://{$VPN_BIND_IP:10.13.13.1}/admin 302', 'redir * /admin 302']], ['../tests/Caddyfile', [home, 'redir * /admin 302']]]) {
     const config = await readFile(new URL(file, import.meta.url), 'utf8');
     const roots = [...config.matchAll(/handle \/ \{\n([\s\S]*?)\n\t\}/g)].map(([, body]) => body.trim().replace(/\s+/g, ' '));
     assert.deepEqual(roots, expected, file);

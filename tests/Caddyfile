@@ -85,7 +85,7 @@
 	import headers
 	root * /srv
 	handle / {
-		redir /admin 302
+		redir * /admin 302
 	}
 	handle /local-download/* {
 		respond "" 404

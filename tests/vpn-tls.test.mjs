@@ -153,6 +153,9 @@ test('production VPN IP serves admin while public listeners abort IP and unknown
     assert.notDeepEqual(ca, vpnCA, 'public and private proxies must not share a certificate authority');
     await assert.rejects(request(vpnPort, '/admin', '10.0.0.1', ca, false));
     assert.equal((await request(vpnPort, '/admin.js', '10.0.0.1', vpnCA, false)).status, 200);
+    const vpnRoot = await request(vpnPort, '/', '10.0.0.1', vpnCA, false);
+    assert.equal(vpnRoot.status, 302);
+    assert.equal(vpnRoot.headers.location, '/admin');
     for (const path of ['/admin', '/admin/api/packages', '/api/admin/packages', '/admin.js']) {
       assert.equal((await request(publicPort, path, 'vault.example', ca)).status, 404);
     }
