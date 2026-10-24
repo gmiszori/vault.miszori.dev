@@ -30,6 +30,7 @@ Screenshots come from the local test stack with sample data.
 - [Security and privacy](#security-and-privacy)
 - [Development and testing](#development-and-testing)
 - [Operations and maintenance](#operations-and-maintenance)
+- [License](#license)
 
 ## Threat model at a glance
 
@@ -478,3 +479,7 @@ Restarting discards incomplete uploads and interrupted one-time claims. Ready, u
 There is no online password change/reset flow. Changing environment variables does not change an enrolled password or its name key.
 
 Deliberate offline re-enrollment requires stopping the API, removing only `auth.json`, preserving `label-salt`, and supplying a new setup token. A different password cannot decrypt previous private names; existing package share links use independent keys and remain unaffected. Protect audit records as sensitive personal data and disclose their collection and retention.
+
+## License
+
+Released under the [MIT License](./LICENSE). The software is provided without warranty; see [Security and privacy](#security-and-privacy) for its limits.
