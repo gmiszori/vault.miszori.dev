@@ -72,7 +72,7 @@
 		templates
 		file_server
 	}
-	@assets path /styles.css /public.js /crypto.js /zip.js /download.js /download-worker.js /share-preview.png /favicon.svg /fonts/inter.woff2 /fonts/jetbrains-mono.woff2
+	@assets path /styles.css /public.js /crypto.js /zip.js /download.js /download-worker.js /share-preview.png /favicon.svg /fonts/instrument-sans.woff2 /fonts/instrument-sans-ext.woff2 /fonts/jetbrains-mono.woff2
 	handle @assets {
 		file_server
 	}
@@ -111,7 +111,7 @@
 		templates
 		file_server
 	}
-	@assets path /styles.css /admin.js /public.js /crypto.js /zip.js /names.js /audit.js /auth.js /download.js /download-worker.js /share-preview.png /favicon.svg /fonts/inter.woff2 /fonts/jetbrains-mono.woff2
+	@assets path /styles.css /admin.js /public.js /crypto.js /zip.js /names.js /audit.js /auth.js /download.js /download-worker.js /share-preview.png /favicon.svg /fonts/instrument-sans.woff2 /fonts/instrument-sans-ext.woff2 /fonts/jetbrains-mono.woff2
 	handle @assets {
 		file_server
 	}

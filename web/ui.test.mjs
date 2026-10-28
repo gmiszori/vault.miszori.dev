@@ -768,7 +768,9 @@ test('entrypoints use the exact brand, system color scheme, and task-focused cop
     assert.doesNotMatch(html, /<header|class="brand"/);
     assert.doesNotMatch(html, /<a\b[^>]*\bhref="\/"/);
     assert.match(html, /<meta name="color-scheme" content="light dark">/);
-    assert.doesNotMatch(html, /A little less|Less exposure|Send it\.|Good things|Private by design|<footer|class="(?:hero|principles|privacy-panel|vault-art|workspace-badge)"/i);
+    // The only footer is the miszori.dev endorsement.
+    assert.deepEqual(html.match(/<footer[\s\S]*?<\/footer>/g), ['<footer class="project-footer"><span>vault</span><span class="endorse">by <a href="https://miszori.dev">miszori.dev</a><span class="gm-tile" aria-hidden="true">GM</span></span></footer>']);
+    assert.doesNotMatch(html, /A little less|Less exposure|Send it\.|Good things|Private by design|class="(?:hero|principles|privacy-panel|vault-art|workspace-badge)"/i);
     if (name === 'admin') assert.match(html, /Server logs include IP addresses/);
   }
   const publicHTML = await readFile(new URL('./index.html', import.meta.url), 'utf8');
@@ -825,7 +827,7 @@ test('messaging previews advertise only the text banner with no square touch-ima
   assert.match(html, /name="twitter:description" content=""/);
 });
 
-test('light and dark palettes provide readable text, indigo controls and keyboard focus', async () => {
+test('light and dark palettes provide readable text, blue project controls and keyboard focus', async () => {
   const css = await readFile(new URL('./styles.css', import.meta.url), 'utf8');
   const palette = block => Object.fromEntries([...block.matchAll(/--([a-z-]+): (#[0-9a-f]{3,6});/g)].map(([, name, value]) => [name, value]));
   const light = palette(/:root \{([^}]+)\}/.exec(css)[1]);
@@ -844,7 +846,7 @@ test('light and dark palettes provide readable text, indigo controls and keyboar
   }
   const channels = value => value.slice(1).match(/../g).map(channel => parseInt(channel, 16));
   assert.match(css, /color-scheme: light dark/);
-  for (const [colors, background, text] of [[light, '#ffffff', '#000000'], [dark, '#000000', '#ffffff']]) {
+  for (const [colors, background, text] of [[light, '#ffffff', '#0a0a0a'], [dark, '#000000', '#f5f5f5']]) {
     for (const name of ['background', 'surface', 'input']) assert.equal(colors[name], background);
     assert.equal(colors.text, text);
     const danger = channels(colors.danger), success = channels(colors.success);
@@ -854,10 +856,9 @@ test('light and dark palettes provide readable text, indigo controls and keyboar
       assert.ok(contrast(colors[name], colors.surface) >= 4.5, `${name} has readable contrast on ${background}`);
     }
     assert.ok(contrast(colors.line, colors.surface) >= 3, `control borders are visible on ${background}`);
-    for (const name of ['blue', 'blue-hover']) {
-      assert.ok(contrast('#ffffff', colors[name]) >= 4.5, `${name} has readable button contrast`);
-      assert.ok(parseInt(colors[name].slice(5, 7), 16) > parseInt(colors[name].slice(1, 3), 16));
-    }
+    assert.ok(contrast(colors['on-blue'], colors.blue) >= 4.5, 'blue buttons have readable text');
+    assert.ok(contrast(colors.blue, colors.surface) >= 4.5, `blue accents are readable on ${background}`);
+    assert.ok(parseInt(colors.blue.slice(5, 7), 16) > parseInt(colors.blue.slice(1, 3), 16), 'vault is blue');
   }
   assert.match(css, /\.status-ready\s*\{[^}]*color: var\(--success\)/);
   assert.match(css, /\.status-downloading\s*\{[^}]*color: var\(--pending\)/);
@@ -869,7 +870,7 @@ test('light and dark palettes provide readable text, indigo controls and keyboar
   assert.match(css, /\.notice\.one-time-warning\s*\{[^}]*border-color: var\(--danger\); color: var\(--danger\)/);
   assert.match(css, /\.notice\.one-time-warning strong\s*\{[^}]*color: var\(--danger\)/);
   assert.match(css, /@media \(prefers-reduced-motion: reduce\)/);
-  assert.match(css, /:focus-visible\s*\{[^}]*outline: 3px solid var\(--focus\)/);
+  assert.match(css, /:focus-visible\s*\{[^}]*outline: 2px solid var\(--focus\)/);
   assert.match(css, /\.file-picker:focus-within/);
   assert.match(css, /@media \(max-width: 540px\)/);
 });
@@ -897,7 +898,7 @@ test('public roots serve the homepage and VPN roots redirect to the admin page',
     const roots = [...config.matchAll(/handle \/ \{\n([\s\S]*?)\n\t\}/g)].map(([, body]) => body.trim().replace(/\s+/g, ' '));
     assert.deepEqual(roots, expected, file);
     assert.match(config, /handle (?:@page|\/package\/\*)/);
-    assert.match(config, /\/fonts\/inter\.woff2 \/fonts\/jetbrains-mono\.woff2/);
+    assert.match(config, /\/fonts\/instrument-sans\.woff2 \/fonts\/instrument-sans-ext\.woff2 \/fonts\/jetbrains-mono\.woff2/);
   }
 });
 
@@ -909,11 +910,11 @@ test('homepage explains the encryption flow without scripts, inline styles, or a
   assert.ok(!/<script|<style|\son\w+=|\sstyle=/i.test(html));
   assert.doesNotMatch(html, /href="\/admin/);
   for (const zone of ['Sender', 'Server', 'Recipient']) assert.match(html, new RegExp(`<h3 class="zone-head"><span>${zone}</span>`));
-  assert.match(html, /<span class="zone-tag">VPN only<\/span>/);
+  assert.match(html, /<span class="zone-tag">vpn only<\/span>/);
   for (const step of ['Your data', 'Encrypt', 'Ciphertext', 'Decrypt', 'Delivered']) assert.match(html, new RegExp(`<h4>${step}</h4>`));
   assert.match(html, /#&lt;key&gt;/);
   const references = [...html.matchAll(/(?:src|href)="([^"]+)"/g)].map(match => match[1]);
-  assert.deepEqual(references, ['/favicon.svg', '/styles.css', '#main', 'https://github.com/gmiszori/vault.miszori.dev']);
+  assert.deepEqual(references, ['/favicon.svg', '/styles.css', '#main', 'https://github.com/gmiszori/vault.miszori.dev', 'https://miszori.dev']);
 });
 
 test('VPN admin uses a local IP certificate and redirects to the IP without changing the public origin', async () => {
@@ -941,7 +942,7 @@ test('HTML entrypoints reference only the agreed self-hosted assets and contain 
     assert.match(html, /Content-Security-Policy/);
     const references = [...html.matchAll(/(?:src|href)="([^"]+)"/g)].map(match => match[1]);
     assert.match(html, /<link rel="icon" type="image\/svg\+xml" href="\/favicon.svg">/);
-    const allowed = new Set(['/styles.css', '/public.js', '/admin.js', '/favicon.svg', '/', '/admin/', '#main']);
+    const allowed = new Set(['/styles.css', '/public.js', '/admin.js', '/favicon.svg', '/', '/admin/', '#main', 'https://miszori.dev']);
     for (const reference of references) assert.ok(allowed.has(reference), `Allowed asset or navigation: ${reference}`);
   }
 });
@@ -1298,7 +1299,8 @@ test('public cards use a narrower centered shell while admin width stays unchang
   const css = await readFile(new URL('./styles.css', import.meta.url), 'utf8');
   const html = await readFile(new URL('./admin.html', import.meta.url), 'utf8');
   assert.match(css, /\.admin-body\s*\{[^}]*max-width:\s*1100px;[^}]*padding:\s*0 24px 40px/);
-  assert.match(css, /\.public-shell\s*\{[^}]*max-width:\s*900px;[^}]*min-height: 100dvh;[^}]*padding:\s*32px 24px;[^}]*display: flex/);
+  assert.match(css, /body\s*\{[^}]*display: flex; flex-direction: column;[^}]*min-height: 100dvh/);
+  assert.match(css, /\.public-shell\s*\{[^}]*flex: 1 0 auto;[^}]*max-width:\s*900px;[^}]*padding:\s*32px 24px;[^}]*display: flex/);
   assert.match(css, /\.public-main\s*\{[^}]*margin-block: auto/);
   assert.match(css, /\.login-panel, \.composer, \.result-panel, \.audit-panel\s*\{\s*width:\s*100%/);
   assert.doesNotMatch(css, /(?:\.composer|\.result-panel|\.login-panel|\.audit-panel)[^{]*\{[^}]*max-width/);

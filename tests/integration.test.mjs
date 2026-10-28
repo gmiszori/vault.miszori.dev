@@ -67,7 +67,7 @@ test('Caddy isolates admin routes and supplies privacy headers', async () => {
   assert.equal(adminRoot.status, 302);
   assert.equal(adminRoot.headers.get('location'), '/admin');
   for (const origin of [pub, admin]) {
-    const font = await fetch(`${origin}/fonts/inter.woff2`);
+    const font = await fetch(`${origin}/fonts/instrument-sans.woff2`);
     assert.equal(font.status, 200);
     assert.match(font.headers.get('content-type'), /font\/woff2/);
     const favicon = await fetch(`${origin}/favicon.svg`);

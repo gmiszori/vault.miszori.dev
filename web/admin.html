@@ -11,8 +11,9 @@
   <link rel="stylesheet" href="/styles.css">
   <script type="module" src="/admin.js"></script>
 </head>
-<body class="admin-body">
+<body>
   <a class="skip-link" href="#main">Skip to content</a>
+  <div class="admin-body">
   <nav class="admin-actions" aria-label="Account"><button id="logout" class="button quiet small" type="button" hidden>Sign out</button></nav>
   <main id="main" class="admin-main">
     <section id="login-panel" class="login-panel panel" aria-labelledby="login-title">
@@ -67,6 +68,8 @@
       </section>
     </div>
   </main>
+  </div>
+  <footer class="project-footer"><span>vault</span><span class="endorse">by <a href="https://miszori.dev">miszori.dev</a><span class="gm-tile" aria-hidden="true">GM</span></span></footer>
   <dialog id="retrieval-dialog" aria-labelledby="retrieval-title"><h2 id="retrieval-title">Download activity</h2><p id="retrieval-package" class="fine-print"></p><p id="retrieval-status" class="status-message" role="status"></p><div class="table-scroll"><table><thead><tr><th scope="col">Started</th><th scope="col">IP</th><th scope="col">Browser / device</th></tr></thead><tbody id="retrieval-body"></tbody></table></div><div class="dialog-actions"><button id="retrieval-next" class="button quiet" type="button" hidden>Next page</button><button id="close-retrievals" class="button primary" type="button">Close</button></div></dialog>
   <dialog id="name-dialog"><form id="rename-form" autocomplete="off"><h2>Name package</h2><label for="rename-name">Private name (empty removes it)</label><input id="rename-name" type="text" autocomplete="off" spellcheck="false"><p id="rename-status" class="status-message" role="status"></p><div class="dialog-actions"><button id="cancel-name" class="button quiet" type="button">Cancel</button><button id="save-name" class="button primary" type="submit">Save name</button></div></form></dialog>
   <dialog id="delete-dialog"><form method="dialog"><h2>Delete this package?</h2><p id="delete-description"></p><p>The link will stop working. This cannot be undone.</p><div class="dialog-actions"><button class="button quiet" value="cancel">Keep package</button><button id="confirm-delete" class="button destructive" value="confirm">Delete package</button></div></form></dialog>
