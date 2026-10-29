@@ -24,7 +24,7 @@ services:
     mem_limit: 256m
     stop_grace_period: 40s
   caddy:
-    image: caddy:2.11-alpine@sha256:d8542f48d34a9cf4e4c11a478865229840e87e4c96ea3f439101f31a5d35f75f
+    image: caddy:2.11-alpine@sha256:eb4d35b7452d1ab6171fbdbe8d9275b2301dad6dad92115d91e19fb9b24d510f
     environment:
       PUBLIC_ORIGIN: http://localhost:18080
       API_UPSTREAM: ${TEST_PUBLIC_API_IP:-172.30.0.2}:8080
@@ -43,7 +43,7 @@ services:
     cap_add: [NET_BIND_SERVICE]
     security_opt: [no-new-privileges:true]
   caddy-vpn:
-    image: caddy:2.11-alpine@sha256:d8542f48d34a9cf4e4c11a478865229840e87e4c96ea3f439101f31a5d35f75f
+    image: caddy:2.11-alpine@sha256:eb4d35b7452d1ab6171fbdbe8d9275b2301dad6dad92115d91e19fb9b24d510f
     environment:
       PUBLIC_ORIGIN: http://localhost:18080
       API_UPSTREAM: ${TEST_PRIVATE_API_IP:-172.30.0.130}:8081
