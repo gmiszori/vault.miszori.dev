@@ -14,7 +14,7 @@
 
 (proxy_api) {
 	reverse_proxy {$API_UPSTREAM:172.30.0.2:8080} {
-		header_up X-Real-IP {remote_host}
+		header_up X-Real-IP {client_ip}
 		header_up -Forwarded
 		header_up -X-Forwarded-For
 		header_up -X-Forwarded-Host

@@ -79,12 +79,21 @@ test('production VPN IP serves admin while public listeners abort IP and unknown
         const vpnPolicy = policies.find(policy => policy.subjects?.includes('10.0.0.1'));
         assert.equal(vpnPolicy.issuers[0].module, 'internal');
         assert.ok(!policies.some(policy => policy.subjects?.includes('vault.example')));
+        // The tunnel isn't behind Cloudflare: no forwarded address is trusted there.
+        for (const server of Object.values(adapted.apps.http.servers)) {
+          assert.equal(server.trusted_proxies, undefined);
+        }
       } else {
         assert.ok(!policies.some(policy => policy.subjects?.includes('10.0.0.1')));
         assert.ok(!policies.find(policy => policy.subjects?.includes('vault.example'))?.issuers?.some(issuer => issuer.module === 'internal'));
-        // Every public listener trusts PROXY headers from the webserver proxy alone.
+        // Every public listener trusts PROXY headers from the webserver proxy alone,
+        // and CF-Connecting-IP from Cloudflare's ranges alone.
         for (const server of Object.values(adapted.apps.http.servers)) {
           assert.deepEqual(server.listener_wrappers, [{ wrapper: 'proxy_protocol', allow: ['172.31.250.2/32'] }, { wrapper: 'tls' }]);
+          assert.equal(server.trusted_proxies.source, 'static');
+          assert.ok(server.trusted_proxies.ranges.includes('173.245.48.0/20'));
+          assert.ok(server.trusted_proxies.ranges.every(range => !/^(10|172\.(1[6-9]|2\d|3[01])|192\.168)\./.test(range)));
+          assert.deepEqual(server.client_ip_headers, ['CF-Connecting-IP']);
         }
         // Substitute only public issuance; production VPN policy and all routes stay unchanged.
         for (const policy of policies) policy.issuers = [{ module: 'internal' }];

@@ -113,7 +113,7 @@ test('browser-compatible AES-GCM package streams once, with audit and key-bound 
   await finalize(p, plaintext.length);
   assert.equal((await fetch(`${pub}/api/packages/${p.id}`)).status, 200);
   assert.equal((await fetch(`${pub}/api/packages/${p.id}`)).status, 200, 'previews must not consume');
-  const response = await fetch(`${pub}/api/packages/${p.id}/consume`, { method: 'POST', headers: { ...p.claimHeaders, 'X-Real-IP': '1.2.3.4', 'X-Forwarded-For': '1.2.3.4' } });
+  const response = await fetch(`${pub}/api/packages/${p.id}/consume`, { method: 'POST', headers: { ...p.claimHeaders, 'X-Real-IP': '1.2.3.4', 'X-Forwarded-For': '1.2.3.4', 'CF-Connecting-IP': '1.2.3.4' } });
   let i = 0;
   for await (const encrypted of records(response)) {
     const decoded = await webcrypto.subtle.decrypt(parameters(p.id, i), key, encrypted);
