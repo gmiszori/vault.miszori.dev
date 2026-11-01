@@ -30,7 +30,7 @@
 		Content-Security-Policy "default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'self'; font-src 'self'; worker-src 'self'; frame-src 'self'; base-uri 'none'; frame-ancestors 'none'; form-action 'self'; object-src 'none'"
 		Referrer-Policy no-referrer
 		X-Content-Type-Options nosniff
-		Cache-Control no-store
+		?Cache-Control no-store
 	}
 }
 
@@ -39,6 +39,8 @@
 		header_up X-Real-IP {client_ip}
 		header_up -Forwarded
 		header_up -X-Forwarded-For
+		# API responses are never cacheable, whatever the API sends.
+		header_down Cache-Control "no-store"
 		flush_interval -1
 		transport http {
 			max_conns_per_host 64
@@ -50,6 +52,8 @@
 
 :8080 {
 	import headers
+	@edge_cached path / /styles.css /share-preview.png /favicon.svg /fonts/instrument-sans.woff2 /fonts/instrument-sans-ext.woff2 /fonts/jetbrains-mono.woff2
+	header @edge_cached Cache-Control "public, max-age=0, s-maxage=86400"
 	root * /srv
 	handle / {
 		rewrite * /home.html

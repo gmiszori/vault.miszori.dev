@@ -58,6 +58,11 @@ http://{$DOMAIN} {
 
 https://{$DOMAIN} {
 	import common_headers
+	# Cloudflare keeps the homepage and its static assets for a day; browsers
+	# revalidate with the edge. Scripts and package pages stay no-store, so code
+	# that handles keys is never served stale. Bump ?v= on styles.css when it changes.
+	@edge_cached path / /styles.css /share-preview.png /favicon.svg /fonts/instrument-sans.woff2 /fonts/instrument-sans-ext.woff2 /fonts/jetbrains-mono.woff2
+	header @edge_cached Cache-Control "public, max-age=0, s-maxage=86400"
 	root * /srv
 	handle / {
 		rewrite * /home.html

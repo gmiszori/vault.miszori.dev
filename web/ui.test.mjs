@@ -914,7 +914,7 @@ test('homepage explains the encryption flow without scripts, inline styles, or a
   for (const step of ['Your data', 'Encrypt', 'Ciphertext', 'Decrypt', 'Delivered']) assert.match(html, new RegExp(`<h4>${step}</h4>`));
   assert.match(html, /#&lt;key&gt;/);
   const references = [...html.matchAll(/(?:src|href)="([^"]+)"/g)].map(match => match[1]);
-  assert.deepEqual(references, ['/favicon.svg', '/styles.css', '#main', 'https://github.com/gmiszori/vault.miszori.dev', 'https://miszori.dev']);
+  assert.deepEqual(references, ['/favicon.svg', '/styles.css?v=1', '#main', 'https://github.com/gmiszori/vault.miszori.dev', 'https://miszori.dev']);
 });
 
 test('VPN admin uses a local IP certificate and redirects to the IP without changing the public origin', async () => {
@@ -942,7 +942,7 @@ test('HTML entrypoints reference only the agreed self-hosted assets and contain 
     assert.match(html, /Content-Security-Policy/);
     const references = [...html.matchAll(/(?:src|href)="([^"]+)"/g)].map(match => match[1]);
     assert.match(html, /<link rel="icon" type="image\/svg\+xml" href="\/favicon.svg">/);
-    const allowed = new Set(['/styles.css', '/public.js', '/admin.js', '/favicon.svg', '/', '/admin/', '#main', 'https://miszori.dev']);
+    const allowed = new Set(['/styles.css?v=1', '/public.js', '/admin.js', '/favicon.svg', '/', '/admin/', '#main', 'https://miszori.dev']);
     for (const reference of references) assert.ok(allowed.has(reference), `Allowed asset or navigation: ${reference}`);
   }
 });

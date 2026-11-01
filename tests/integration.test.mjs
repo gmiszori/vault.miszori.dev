@@ -63,6 +63,13 @@ test('Caddy isolates admin routes and supplies privacy headers', async () => {
   const homepage = await fetch(pub, { redirect: 'manual' });
   assert.equal(homepage.status, 200);
   assert.match(await homepage.text(), /<h1 class="home-title">vault\.miszori\.dev<\/h1>/);
+  for (const path of ['/', '/styles.css', '/fonts/instrument-sans.woff2', '/favicon.svg', '/share-preview.png']) {
+    assert.equal((await fetch(pub + path)).headers.get('cache-control'), 'public, max-age=0, s-maxage=86400', path);
+  }
+  for (const path of ['/public.js', '/crypto.js', '/download-worker.js', `/package/${'0'.repeat(64)}`]) {
+    assert.equal((await fetch(pub + path)).headers.get('cache-control'), 'no-store', path);
+  }
+  assert.equal((await fetch(`${admin}/styles.css`)).headers.get('cache-control'), 'no-store');
   const adminRoot = await fetch(admin, { redirect: 'manual' });
   assert.equal(adminRoot.status, 302);
   assert.equal(adminRoot.headers.get('location'), '/admin');
@@ -98,6 +105,7 @@ test('Caddy isolates admin routes and supplies privacy headers', async () => {
   assert.equal(activity.storage.maxBytes, 107374182400);
   assert.equal((await adminFetch('packages', 'POST', '{"ttlSeconds":3600}', { Origin: 'https://evil.example' })).status, 403);
   const invalid = await fetch(`${pub}/api/packages/${'0'.repeat(64)}`); assert.equal(invalid.status, 404);
+  assert.equal(invalid.headers.get('cache-control'), 'no-store');
 });
 
 test('browser-compatible AES-GCM package streams once, with audit and key-bound authentication', async () => {

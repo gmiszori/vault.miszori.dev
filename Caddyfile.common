@@ -7,7 +7,8 @@
 		X-Robots-Tag "noindex, nofollow, noarchive"
 		Permissions-Policy "camera=(), microphone=(), geolocation=()"
 		Strict-Transport-Security "max-age=31536000"
-		Cache-Control "no-store"
+		# Default for every response that does not set its own cache policy.
+		?Cache-Control "no-store"
 		-Server
 	}
 }
@@ -19,6 +20,8 @@
 		header_up -X-Forwarded-For
 		header_up -X-Forwarded-Host
 		header_up -X-Forwarded-Proto
+		# API responses are never cacheable, whatever the API sends.
+		header_down Cache-Control "no-store"
 		flush_interval -1
 		transport http {
 			max_conns_per_host 64
