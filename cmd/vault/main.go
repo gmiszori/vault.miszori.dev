@@ -70,7 +70,8 @@ type Server struct {
 	auth               *authRecord
 	setupVerifier      [32]byte
 	packages           map[string]*Package
-	limits             map[string]bucket
+	limits             map[string]bucket // per-client budgets, keyed by kind and limitKey
+	claims             map[string]bucket // per-package claim budgets, apart so a full limits table can't refuse them
 	quota              int64
 	reservedBytes      int64
 	now                func() time.Time
@@ -158,7 +159,7 @@ func newServer(root, user, setupToken, origin string, quota int64) (*Server, err
 		user = "admin"
 	}
 	_, trustedProxy, _ := net.ParseCIDR(defaultTrustedProxyCIDR)
-	s := &Server{root: root, user: user, origin: origin, quota: quota, packages: map[string]*Package{}, limits: map[string]bucket{}, now: time.Now, gate: newRequestGate(defaultGateLimits()), trustedProxy: trustedProxy}
+	s := &Server{root: root, user: user, origin: origin, quota: quota, packages: map[string]*Package{}, limits: map[string]bucket{}, claims: map[string]bucket{}, now: time.Now, gate: newRequestGate(defaultGateLimits()), trustedProxy: trustedProxy}
 	if err := os.MkdirAll(root, 0700); err != nil {
 		return nil, err
 	}
@@ -277,31 +278,37 @@ func (s *Server) allowed(key string, n int) bool {
 	return s.allowedLocked(key, n)
 }
 func (s *Server) allowedLocked(key string, n int) bool {
-	now := s.now()
-	b, tracked := s.limits[key]
+	return allowIn(s.limits, key, n, s.now())
+}
+
+// allowIn counts one request against key's budget of n per minute in table.
+func allowIn(table map[string]bucket, key string, n int, now time.Time) bool {
+	b, tracked := table[key]
 	if now.Sub(b.start) >= time.Minute {
 		b = bucket{start: now}
 	}
 	b.count++
 	// A full table refuses only new keys; already-tracked clients keep their own budgets.
-	if !tracked && len(s.limits) >= 10000 {
-		for k, v := range s.limits {
+	if !tracked && len(table) >= 10000 {
+		for k, v := range table {
 			if now.Sub(v.start) >= time.Minute {
-				delete(s.limits, k)
+				delete(table, k)
 			}
 		}
-		if len(s.limits) >= 10000 {
+		if len(table) >= 10000 {
 			return false
 		}
 	}
-	s.limits[key] = b
+	table[key] = b
 	return b.count <= n
 }
 
 // Valid package IDs and claim proofs are unguessable, so only failed public requests
-// spend the shared budget; exhausting it cannot block recipients holding real links.
-func (s *Server) publicFailure(w http.ResponseWriter, code int, msg string) {
-	if !s.gate.allowPublicFailure(s.now()) {
+// spend the per-client and shared budgets; exhausting them, or filling the limits table
+// with many addresses, cannot block recipients holding real links. The per-client budget
+// comes first, so a blocked client stops spending the shared one.
+func (s *Server) publicFailure(w http.ResponseWriter, r *http.Request, code int, msg string) {
+	if !s.allowed("public:"+limitKey(s.peerIP(r)), 120) || !s.gate.allowPublicFailure(s.now()) {
 		fail(w, 429, "Too many requests")
 		return
 	}
@@ -342,7 +349,7 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		if r.URL.Path == "/api/admin/auth" && r.Method == http.MethodGet {
-			if !s.allowed("discovery:"+s.peerIP(r), 20) || !s.gate.allowAdminDiscovery(s.now()) {
+			if !s.allowed("discovery:"+limitKey(s.peerIP(r)), 20) || !s.gate.allowAdminDiscovery(s.now()) {
 				fail(w, 429, "Too many requests")
 				return
 			}
@@ -370,13 +377,9 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		s.admin(w, r)
 		return
 	}
-	if !s.allowed("public:"+s.peerIP(r), 120) {
-		fail(w, 429, "Too many requests")
-		return
-	}
 	parts := strings.Split(strings.Trim(r.URL.Path, "/"), "/")
 	if len(parts) < 3 || parts[0] != "api" || parts[1] != "packages" || !validID(parts[2]) {
-		s.publicFailure(w, 404, "Package already viewed or does not exist")
+		s.publicFailure(w, r, 404, "Package already viewed or does not exist")
 		return
 	}
 	id := parts[2]
@@ -384,11 +387,11 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		if r.ContentLength != 0 || len(r.TransferEncoding) != 0 {
 			r.Close = true
 			w.Header().Set("Connection", "close")
-			s.publicFailure(w, 400, "Download claims must not contain a request body")
+			s.publicFailure(w, r, 400, "Download claims must not contain a request body")
 			return
 		}
 		if r.Header.Get("Sec-Fetch-Site") == "cross-site" {
-			s.publicFailure(w, 403, "Cross-origin request denied")
+			s.publicFailure(w, r, 403, "Cross-origin request denied")
 			return
 		}
 		s.consume(w, r, id)
@@ -399,14 +402,14 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		p := s.packages[id]
 		if p == nil || p.Status != "ready" || !validClaimHash(p.ClaimHash) || !s.now().Before(p.ExpiresAt) {
 			s.mu.Unlock()
-			s.publicFailure(w, 404, "Package already viewed or does not exist")
+			s.publicFailure(w, r, 404, "Package already viewed or does not exist")
 			return
 		}
 		defer s.mu.Unlock()
 		writeJSON(w, 200, map[string]any{"status": "ready", "expiresAt": p.ExpiresAt, "oneTime": p.OneTime, "format": p.Format})
 		return
 	}
-	s.publicFailure(w, 404, "Not found")
+	s.publicFailure(w, r, 404, "Not found")
 }
 func (s *Server) storageUsedLocked() int64 {
 	var used int64
@@ -698,11 +701,11 @@ func (s *Server) consume(w http.ResponseWriter, r *http.Request, id string) {
 	p := s.packages[id]
 	if p == nil || p.Status != "ready" || !s.now().Before(p.ExpiresAt) || !matchesClaimToken(r.Header.Get("X-Claim-Token"), p.ClaimHash) {
 		s.mu.Unlock()
-		s.publicFailure(w, 404, "Package already viewed or does not exist")
+		s.publicFailure(w, r, 404, "Package already viewed or does not exist")
 		return
 	}
 	// Bounds audit growth from a leaked reusable link; 429 happens before any claim.
-	if !s.allowedLocked("claim:"+id, maxClaimsPerPackagePerMinute) {
+	if !allowIn(s.claims, id, maxClaimsPerPackagePerMinute, s.now()) {
 		s.mu.Unlock()
 		w.Header().Set("Retry-After", "60")
 		fail(w, 429, "Too many retrievals; no package has been claimed")

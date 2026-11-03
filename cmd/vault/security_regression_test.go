@@ -147,19 +147,20 @@ func TestExhaustedFailureBudgetDoesNotBlockValidRecipients(t *testing.T) {
 	}
 }
 
-func TestFullLimitTableKeepsTrackedClients(t *testing.T) {
+func TestFullLimitTableNeverBlocksRealLinks(t *testing.T) {
 	s := testServer(t)
 	now := time.Date(2026, 10, 18, 10, 0, 1, 0, time.UTC)
 	s.now = func() time.Time { return now }
-	id := readyPackage(t, s)
-	get := func(ip string) int {
+	id := reusablePackage(t, s)
+	get := func(ip, id string) int {
 		r := httptest.NewRequest("GET", "/api/packages/"+id, nil)
 		r.RemoteAddr = ip + ":1000"
 		w := httptest.NewRecorder()
 		s.ServeHTTP(w, r)
 		return w.Code
 	}
-	if code := get("203.0.113.1"); code != 200 {
+	missing := strings.Repeat("0", 64)
+	if code := get("203.0.113.1", missing); code != 404 {
 		t.Fatal("tracked client setup", code)
 	}
 	s.mu.Lock()
@@ -167,15 +168,63 @@ func TestFullLimitTableKeepsTrackedClients(t *testing.T) {
 		s.limits[fmt.Sprintf("public:flood-%d", n)] = bucket{start: now, count: 1}
 	}
 	s.mu.Unlock()
-	if code := get("203.0.113.1"); code != 200 {
+	if code := get("203.0.113.2", id); code != 200 {
+		t.Fatalf("full table blocked a new client holding a real link: %d", code)
+	}
+	r := httptest.NewRequest("POST", "/api/packages/"+id+"/consume", nil)
+	r.RemoteAddr = "203.0.113.3:1000"
+	r.Header.Set("X-Claim-Token", downloadClaimTokenFixture)
+	w := httptest.NewRecorder()
+	s.ServeHTTP(w, r)
+	if w.Code != 200 {
+		t.Fatalf("full table blocked a new client's download: %d %s", w.Code, w.Body)
+	}
+	if code := get("203.0.113.1", missing); code != 404 {
 		t.Fatalf("full table blocked an already-tracked client: %d", code)
 	}
-	if code := get("203.0.113.2"); code != 429 {
-		t.Fatalf("full table admitted a new key: %d", code)
+	if code := get("203.0.113.4", missing); code != 429 {
+		t.Fatalf("full table admitted a new failing key: %d", code)
 	}
 	now = now.Add(time.Minute)
-	if code := get("203.0.113.2"); code != 200 {
+	if code := get("203.0.113.4", missing); code != 404 {
 		t.Fatalf("expired entries were not pruned: %d", code)
+	}
+}
+
+func TestIPv6ClientsShareTheirSlash64Budget(t *testing.T) {
+	s := testServer(t)
+	s.now = func() time.Time { return time.Date(2026, 10, 18, 10, 0, 1, 0, time.UTC) }
+	missing := strings.Repeat("0", 64)
+	for n := 0; n < 121; n++ {
+		r := httptest.NewRequest("GET", "/api/packages/"+missing, nil)
+		// A new address in the same /64 for every request.
+		r.RemoteAddr = fmt.Sprintf("[2001:db8:1:2::%x]:1000", n+1)
+		w := httptest.NewRecorder()
+		s.ServeHTTP(w, r)
+		if want := map[bool]int{true: 429, false: 404}[n >= 120]; w.Code != want {
+			t.Fatalf("request %d from the /64 returned %d; want %d", n, w.Code, want)
+		}
+	}
+	r := httptest.NewRequest("GET", "/api/packages/"+missing, nil)
+	r.RemoteAddr = "[2001:db8:1:3::1]:1000"
+	w := httptest.NewRecorder()
+	s.ServeHTTP(w, r)
+	if w.Code != 404 {
+		t.Fatalf("a neighbouring /64 shared the budget: %d", w.Code)
+	}
+}
+
+func TestLimitKey(t *testing.T) {
+	for in, want := range map[string]string{
+		"192.0.2.7":            "192.0.2.7",
+		"::ffff:192.0.2.7":     "192.0.2.7",
+		"2001:db8:1:2:3:4:5:6": "2001:db8:1:2::/64",
+		"2001:db8:1:3::1":      "2001:db8:1:3::/64",
+		"not an address":       "not an address",
+	} {
+		if got := limitKey(in); got != want {
+			t.Errorf("limitKey(%q) = %q, want %q", in, got, want)
+		}
 	}
 }
 
