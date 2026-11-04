@@ -100,7 +100,7 @@ To update, run `git pull --ff-only` and `docker compose up --build -d --wait`. A
 - **Admin password never sent.** It is stretched with PBKDF2 (600,000 rounds) in the browser and split into a sign-in secret and keys that never leave it.
 - **Write-only activity log.** Each retrieval's IP and browser details are encrypted to the admin's public key, so the server can't read them back.
 - **VPN-only administration.** Admin routes return 404 on the public site, and the admin listener checks that the connection really comes from the VPN proxy.
-- **Locked-down containers.** The API runs as a non-root user in a shell-free `scratch` image with a read-only root and dropped capabilities.
+- **Locked-down containers.** The API runs as a non-root user in a shell-free `scratch` image with a read-only root and dropped capabilities. Caddy also runs as a non-root user.
 - **Limited logging.** Access logs are off, and error logs drop client IPs, User-Agents, and credentials.
 
 Client-side encryption doesn't protect you if the server is compromised and serves modified JavaScript, so guard deployment access and review changes. A one-time package is consumed when an authorized download begins, even if delivery fails, so keep a copy of anything irreplaceable. Deleting a package doesn't erase it from SSDs, snapshots, or backups. The code has not been independently audited. The full threat model is in [docs/security.md](docs/security.md), and vulnerability reporting is in [SECURITY.md](SECURITY.md).

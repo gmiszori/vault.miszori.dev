@@ -10,6 +10,7 @@
 | `wireguard` | Admin-only encrypted tunnel, persistent per-device identities, and forwarding restrictions |
 | `caddy-vpn` | Admin HTTPS using an internal CA; shares WireGuard's network namespace, but not its keys or configuration volume, via [`Caddyfile.vpn`](../Caddyfile.vpn) |
 | `api` | One Go process managing authentication, ciphertext, package state, quotas, audit records, and cleanup |
+| `caddy-volumes` | One-shot job that gives Caddy's volumes to its unprivileged user, then exits |
 
 ```mermaid
 flowchart LR

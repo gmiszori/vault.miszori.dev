@@ -25,6 +25,7 @@ services:
     stop_grace_period: 40s
   caddy:
     image: caddy:2.11-alpine@sha256:70b3180738b46cd88e49b300d790ae448a0aca3f58edef0f000bb57d619a9ab3
+    user: "10002:10002"
     environment:
       PUBLIC_ORIGIN: http://localhost:18080
       API_UPSTREAM: ${TEST_PUBLIC_API_IP:-172.30.0.2}:8080
@@ -44,6 +45,7 @@ services:
     security_opt: [no-new-privileges:true]
   caddy-vpn:
     image: caddy:2.11-alpine@sha256:70b3180738b46cd88e49b300d790ae448a0aca3f58edef0f000bb57d619a9ab3
+    user: "10002:10002"
     environment:
       PUBLIC_ORIGIN: http://localhost:18080
       API_UPSTREAM: ${TEST_PRIVATE_API_IP:-172.30.0.130}:8081

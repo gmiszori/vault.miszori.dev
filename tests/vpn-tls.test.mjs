@@ -112,9 +112,11 @@ test('production VPN IP serves admin while public listeners abort IP and unknown
           testNetworks.set(network, networkName);
         }
       }
+      const [uid, gid] = service.user.split(':');
       docker('run', '-d', '--name', container,
         ...Object.keys(networkOwner.networks).flatMap(network => ['--network', testNetworks.get(network)]),
-        '--read-only', '-v', '/data', '-v', '/config',
+        '--read-only', '--user', service.user,
+        '--tmpfs', `/data:uid=${uid},gid=${gid}`, '--tmpfs', `/config:uid=${uid},gid=${gid}`,
         ...service.tmpfs.flatMap(mount => ['--tmpfs', mount]),
         ...service.cap_drop.flatMap(capability => ['--cap-drop', capability]),
         ...(service.cap_add || []).flatMap(capability => ['--cap-add', capability]),
@@ -145,10 +147,8 @@ test('production VPN IP serves admin while public listeners abort IP and unknown
     let admin;
     for (let attempt = 0; attempt < 60; attempt++) {
       try {
-        docker('cp', `${name}:/data/caddy/pki/authorities/local/root.crt`, join(dir, 'root.crt'));
-        ca = await readFile(join(dir, 'root.crt'));
-        docker('cp', `${vpnName}:/data/caddy/pki/authorities/local/root.crt`, join(dir, 'vpn-root.crt'));
-        vpnCA = await readFile(join(dir, 'vpn-root.crt'));
+        ca = docker('exec', name, 'cat', '/data/caddy/pki/authorities/local/root.crt');
+        vpnCA = docker('exec', vpnName, 'cat', '/data/caddy/pki/authorities/local/root.crt');
         admin = await request(vpnPort, '/admin', '10.0.0.1', vpnCA, false);
         await request(publicPort, '/public.js', 'vault.example', ca);
         break;

@@ -93,7 +93,18 @@ test('VPN namespace has a dedicated ingress bridge and isolated backend and secr
     assert.equal(proxy.read_only, true);
     assert.deepEqual(proxy.cap_drop, ['ALL']);
     assert.ok(proxy.security_opt.includes('no-new-privileges:true'));
+    assert.equal(proxy.user, '10002:10002');
+    assert.equal(proxy.depends_on['caddy-volumes'].condition, 'service_completed_successfully');
   }
   assert.deepEqual(privateProxy.cap_add, ['NET_BIND_SERVICE']);
   assert.deepEqual(publicProxy.cap_add, ['NET_BIND_SERVICE']);
+  // The only root container in the proxy path: no network, and nothing it can keep.
+  const volumes = config.services['caddy-volumes'];
+  assert.equal(volumes.network_mode, 'none');
+  assert.equal(volumes.read_only, true);
+  assert.equal(volumes.restart ?? 'no', 'no');
+  assert.deepEqual(volumes.cap_drop, ['ALL']);
+  assert.deepEqual(volumes.cap_add, ['CHOWN', 'DAC_READ_SEARCH']);
+  assert.ok(volumes.security_opt.includes('no-new-privileges:true'));
+  assert.ok(volumes.volumes.every(volume => volume.source.startsWith('caddy_')));
 });

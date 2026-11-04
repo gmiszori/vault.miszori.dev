@@ -42,8 +42,35 @@ services:
       driver: json-file
       options: {max-size: "10m", max-file: "3"}
 
+  # Caddy runs unprivileged, but new volumes start out owned by root. This runs on
+  # every `up` and exits before either Caddy starts.
+  caddy-volumes:
+    image: caddy:2.11-alpine@sha256:70b3180738b46cd88e49b300d790ae448a0aca3f58edef0f000bb57d619a9ab3
+    user: "0:0"
+    entrypoint: ["chown", "-Rh", "10002:10002", "/volumes/data", "/volumes/config", "/volumes/vpn_data", "/volumes/vpn_config"]
+    volumes:
+      - caddy_data:/volumes/data
+      - caddy_config:/volumes/config
+      - caddy_vpn_data:/volumes/vpn_data
+      - caddy_vpn_config:/volumes/vpn_config
+    network_mode: none
+    read_only: true
+    cap_drop: [ALL]
+    # DAC_READ_SEARCH lets it enter directories already owned by Caddy's user.
+    cap_add: [CHOWN, DAC_READ_SEARCH]
+    security_opt: [no-new-privileges:true]
+    pids_limit: 10
+    mem_limit: 64m
+    ulimits:
+      core: 0
+      nofile: {soft: 2048, hard: 2048}
+    logging:
+      driver: json-file
+      options: {max-size: "10m", max-file: "3"}
+
   caddy:
     image: caddy:2.11-alpine@sha256:70b3180738b46cd88e49b300d790ae448a0aca3f58edef0f000bb57d619a9ab3
+    user: "10002:10002"
     restart: unless-stopped
     environment:
       DOMAIN: ${DOMAIN:-vault.miszori.dev}
@@ -63,6 +90,8 @@ services:
       webserver:
         aliases: [vault]
     depends_on:
+      caddy-volumes:
+        condition: service_completed_successfully
       api:
         condition: service_healthy
     read_only: true
@@ -114,6 +143,7 @@ services:
 
   caddy-vpn:
     image: caddy:2.11-alpine@sha256:70b3180738b46cd88e49b300d790ae448a0aca3f58edef0f000bb57d619a9ab3
+    user: "10002:10002"
     restart: unless-stopped
     environment:
       VPN_BIND_IP: ${VPN_BIND_IP:-10.13.13.1}
@@ -127,6 +157,8 @@ services:
       - caddy_vpn_data:/data
       - caddy_vpn_config:/config
     depends_on:
+      caddy-volumes:
+        condition: service_completed_successfully
       api:
         condition: service_healthy
       wireguard:
