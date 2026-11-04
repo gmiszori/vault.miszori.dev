@@ -54,6 +54,9 @@ No host VPN interface, extra VPN service, hosts-file entry, or DNS override is r
 
 ```bash
 docker compose config --quiet
+docker compose up --build -d --wait wireguard
+# Once, on a new install: Caddy runs unprivileged, and new volumes belong to root.
+for s in caddy caddy-vpn; do docker compose run --rm --no-deps --user root --cap-add CHOWN --entrypoint chown $s -R 10002:10002 /data /config; done
 docker compose up --build -d --wait
 docker compose logs --tail=30 wireguard api caddy caddy-vpn
 ```

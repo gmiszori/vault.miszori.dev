@@ -90,6 +90,12 @@ test('real WireGuard tunnel reaches admin HTTPS but cannot forward to the backen
       'go', 'build', '-o', '/out/probe', './tests/vpn-probe.go');
     created = true;
     try {
+      // The same steps as a new install in docs/deployment.md.
+      compose('up', '--build', '-d', '--wait', '--wait-timeout', '60', 'wireguard');
+      for (const service of ['caddy', 'caddy-vpn']) {
+        compose('run', '--rm', '--no-deps', '--user', 'root', '--cap-add', 'CHOWN', '--entrypoint', 'chown',
+          service, '-R', '10002:10002', '/data', '/config');
+      }
       compose('up', '--build', '-d', '--wait', '--wait-timeout', '60');
     } catch (error) {
       throw new Error(`${error.message}\n${compose('logs', '--no-color', '--tail', '20')}`);

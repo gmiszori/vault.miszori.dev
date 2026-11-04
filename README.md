@@ -66,6 +66,9 @@ It runs on a Linux host with Docker Compose v2 and kernel WireGuard support, beh
    ```bash
    git clone https://github.com/gmiszori/vault.miszori.dev && cd vault.miszori.dev
    cp .env.example .env && chmod 600 .env   # set the variables below
+   docker compose up --build -d --wait wireguard
+   # Once, on a new install: Caddy runs unprivileged, and new volumes belong to root.
+   for s in caddy caddy-vpn; do docker compose run --rm --no-deps --user root --cap-add CHOWN --entrypoint chown $s -R 10002:10002 /data /config; done
    docker compose up --build -d --wait
    ```
 5. Copy the device profile to your admin device through a trusted channel and import it into WireGuard:
