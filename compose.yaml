@@ -43,7 +43,7 @@ services:
       options: {max-size: "10m", max-file: "3"}
 
   caddy:
-    image: caddy:2.11-alpine@sha256:eb4d35b7452d1ab6171fbdbe8d9275b2301dad6dad92115d91e19fb9b24d510f
+    image: caddy:2.11-alpine@sha256:70b3180738b46cd88e49b300d790ae448a0aca3f58edef0f000bb57d619a9ab3
     restart: unless-stopped
     environment:
       DOMAIN: ${DOMAIN:-vault.miszori.dev}
@@ -113,7 +113,7 @@ services:
       options: {max-size: "10m", max-file: "3"}
 
   caddy-vpn:
-    image: caddy:2.11-alpine@sha256:eb4d35b7452d1ab6171fbdbe8d9275b2301dad6dad92115d91e19fb9b24d510f
+    image: caddy:2.11-alpine@sha256:70b3180738b46cd88e49b300d790ae448a0aca3f58edef0f000bb57d619a9ab3
     restart: unless-stopped
     environment:
       VPN_BIND_IP: ${VPN_BIND_IP:-10.13.13.1}
