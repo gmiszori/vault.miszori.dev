@@ -8,8 +8,9 @@ Each package is encrypted in the uploader's browser with a fresh random 256-bit 
 | --- | --- | --- |
 | Network observer | Read content, keys, or links (HTTPS) | See that a transfer happened and its approximate size |
 | Someone with a link but no `#` key, such as a preview bot | Decrypt, or claim and consume a one-time package | Load the landing page |
-| Copy of the server's disk | Decrypt content, package names, or retrieval activity (IP and browser); reconstruct links; claim packages from stored hashes; sign in with the stored verifier | Read sizes, creation/expiry times, retrieval counts, and file modification times; read activity recorded before the admin first signs in after upgrading; brute-force the admin password offline at 600,000 PBKDF2 rounds per guess |
+| Copy of the server's disk | Decrypt content, package names, or retrieval activity (IP and browser); reconstruct links; claim packages from stored hashes; sign in with the stored verifier | Read sizes, creation/expiry times, retrieval counts, and file modification times; read activity recorded before the admin first signs in after upgrading; brute-force the admin password offline at 600,000 PBKDF2 rounds per guess; join the admin VPN with the WireGuard server and peer private keys kept in the VPN volume (signing in still needs the admin password) |
 | Malicious server operator during a compromise | Recover keys for links never opened during the compromise | Serve modified JavaScript that captures keys of links opened during the compromise |
+| Cloudflare, or anyone controlling the Cloudflare account | Recover keys for links never opened while it acts maliciously; decrypt stored ciphertext | Terminates public HTTPS, so it sees package IDs, recipient IPs, browser details and claim tokens, and can use a claim token to consume a one-time link; serve modified JavaScript that captures keys of links opened meanwhile |
 
 Design choices behind these properties:
 
@@ -22,14 +23,18 @@ Design choices behind these properties:
 
 ## Trust boundaries
 
-**Client-side encryption does not defend against a compromised server serving modified JavaScript.** Protect deployment credentials, review changes, and keep dependencies patched. An independently distributed client is needed if server-delivered code must be excluded from the trust model. No independent external security audit has been performed; automated vulnerability scans are not an audit or a security guarantee.
+**Client-side encryption does not defend against a compromised server serving modified JavaScript.** Protect deployment credentials, review changes, and keep dependencies patched.
+
+**Cloudflare is inside this trust boundary.** The public domain runs through Cloudflare's proxy, which terminates HTTPS and delivers `public.js` and the other scripts. "The server never sees a key" therefore holds for this server, not for Cloudflare: Cloudflare, or anyone who takes over the Cloudflare account, could serve modified scripts that capture keys, and it sees the same request metadata as the server. Protect the Cloudflare account with strong MFA and a minimal set of API tokens. Removing vault from Cloudflare's proxy would remove this trust but needs a different firewall and client-IP design.
+
+**The VPN keys live on the server.** The WireGuard container generates and keeps the server key and each device's private key in its volume, so a copy of the disk gives VPN access. That only reaches the admin listener; signing in still needs the admin password. Treat the VPN volume like other secrets, and revoke and re-enroll devices if the disk may have been copied. An independently distributed client is needed if server-delivered code must be excluded from the trust model. No independent external security audit has been performed; automated vulnerability scans are not an audit or a security guarantee.
 
 - **Share links grant access.** Anyone holding the complete link can retrieve the content. A package ID or stored claim verifier alone cannot authorize a claim. One-time content cannot be restored after an authorized attempt fails, including network, decryption, or save failures. Retain a trusted original for irreplaceable data.
 - **Metadata remains visible.** The server learns ciphertext sizes and record boundaries, transfer timing, expiry, package format/mode, and retrieval IP/browser details; it stores the latter only in sealed records. IPs may represent a proxy, NAT, or VPN; size patterns may reveal approximate file counts and sizes.
 - **Delivered plaintext cannot be revoked.** Recipients, extensions, clipboard managers, messaging providers, screenshots, and endpoint malware are outside the application's control.
 - **Deletion is not forensic erasure.** Unlinking files does not erase SSD remnants, snapshots, backups, RAID copies, or host caches. Exclude the package volume from backups/snapshots when destruction is required. Storage failures can prevent deletion, and offline storage cannot enforce real-time expiry; monitor cleanup errors.
 - **Host access remains privileged.** Docker does not protect against a malicious host administrator. Protect the initial setup token and Docker access; use encrypted disks, encrypted/disabled swap, and disabled core dumps.
-- **Avoid additional data collection.** Caddy access logging is disabled, and the public proxy's error log drops client IPs and User-Agent headers. Do not add request-body logging, key/URL telemetry, analytics, external error collection, or third-party scripts.
+- **Avoid additional data collection.** Caddy access logging is disabled, and the public proxy's error log drops client IPs, all request headers and the URL. Do not add request-body logging, key/URL telemetry, analytics, external error collection, or third-party scripts.
 
 HTTPS protects transport, AES-GCM protects stored content, and the VPN/interface boundary restricts administration. CSP, same-origin checks, cache restrictions, and throttling provide additional safeguards, not absolute protection. Host patching, firewall policy, access-layer MFA where applicable, backup policy, and independent review remain operator responsibilities.
 
@@ -40,7 +45,7 @@ HTTPS protects transport, AES-GCM protects stored content, and the VPN/interface
 - Chunk uploads reserve quota and write ciphertext without holding the server-wide lock, so a slow upload does not delay recipients, cleanup, or other admin requests. Each package accepts one in-flight chunk at a time, and finalization waits for it.
 - The API runs as UID/GID 10001 in a shell-free `scratch` image, with a read-only root, dropped capabilities, `no-new-privileges`, resource caps, and an internal `/vault healthcheck` command.
 - Both Caddy services run as UID/GID 10002 and retain only `NET_BIND_SERVICE` and `no-new-privileges`; the management API is disabled. Keep that capability: the pinned binary's file capability otherwise causes Linux startup to fail with `operation not permitted`.
-- Proxies limit header size/read time, idle time, and upstream connections. Error logs strip claim/upload/authentication/cookie credentials; container logs rotate at 10 MiB × 3 per service.
+- Proxies limit header size/read time, idle time, and upstream connections. The public error log keeps no request headers, URLs or client addresses, so it holds no credentials, package IDs or recipient details; container logs rotate at 10 MiB × 3 per service.
 - Base images and Caddy are digest-pinned; WireGuard tools use Alpine's signed repositories. GitHub Actions are SHA-pinned with read-only permissions and no retained checkout credentials. CI checks Go source and the exact production binary with `govulncheck`, plus race/static, browser, and Docker/WireGuard tests. Review Dependabot proposals and Caddy digest updates; pins do not replace rebuilding and vulnerability monitoring.
 
 Slow request bodies and individual response-record writes have two-minute I/O deadlines. Advancing downloads have no fixed overall duration limit, but cannot resume. Keep backend networks private and health checks local.

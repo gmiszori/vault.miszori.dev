@@ -6,14 +6,14 @@
 		format filter {
 			wrap json
 			fields {
-				request>headers>X-Claim-Token delete
-				request>headers>X-Upload-Token delete
-				request>headers>Authorization delete
-				request>headers>Cookie delete
-				# Recipient addresses and browsers are kept only in sealed retrieval records.
+				# Recipient addresses and browsers are kept only in sealed retrieval records,
+				# so no request detail is logged: the headers carry credentials, the browser
+				# and the visitor's address (Cf-Connecting-Ip, X-Forwarded-For), and the URL
+				# carries the package ID.
+				request>headers delete
+				request>uri delete
 				request>remote_ip delete
 				request>client_ip delete
-				request>headers>User-Agent delete
 			}
 		}
 	}
@@ -42,6 +42,23 @@
 	}
 }
 
+# Authenticated Origin Pulls. With ORIGIN_PULL=on in .env, the TLS handshake only
+# succeeds when the client presents the certificate that Cloudflare sends for this
+# zone, issued by our own CA in origin-pull-ca.pem. Other Cloudflare customers share
+# Cloudflare's addresses, so the firewall alone can't tell them apart; this can.
+# Off by default, for local development without Cloudflare in front. Setup and
+# rollback: docs/authenticated-origin-pulls.md in github.com/gmiszori/webserver-proxy.
+(origin_pull_on) {
+	tls {
+		client_auth {
+			mode require_and_verify
+			trust_pool file /etc/caddy/origin-pull-ca.pem
+		}
+	}
+}
+(origin_pull_off) {
+}
+
 import /etc/caddy/common.caddy
 
 :80 {
@@ -58,6 +75,7 @@ http://{$DOMAIN} {
 
 https://{$DOMAIN} {
 	import common_headers
+	import origin_pull_{$ORIGIN_PULL:off}
 	# Cloudflare keeps the homepage and its static assets for a day; browsers
 	# revalidate with the edge. Scripts and package pages stay no-store, so code
 	# that handles keys is never served stale. Bump ?v= on styles.css when it changes.
@@ -68,6 +86,17 @@ https://{$DOMAIN} {
 		rewrite * /home.html
 		templates
 		file_server
+	}
+	# The security contact (RFC 9116); the policy itself is on miszori.dev.
+	handle /.well-known/security.txt {
+		header Content-Type "text/plain; charset=utf-8"
+		respond <<TXT
+			Contact: mailto:gergo@miszori.dev
+			Expires: 2027-11-01T00:00:00.000Z
+			Preferred-Languages: en, de, hu
+			Policy: https://miszori.dev/security/
+			Canonical: https://{$DOMAIN}/.well-known/security.txt
+			TXT 200
 	}
 	handle /local-download/* {
 		respond "" 404

@@ -2,17 +2,15 @@
 
 ## Reporting a vulnerability
 
-Please report vulnerabilities privately through GitHub's **Report a vulnerability** button on the [Security tab](https://github.com/gmiszori/vault.miszori.dev/security/advisories/new). Do not open a public issue for security problems.
+Please report vulnerabilities privately by email to [gergo@miszori.dev](mailto:gergo@miszori.dev), not in a public issue. The full policy, with what to include in a report, the testing rules and the scope, is at [miszori.dev/security](https://miszori.dev/security/).
 
-Include the affected component, steps to reproduce, and the impact you expect. I aim to acknowledge reports within 7 days. Only the latest commit on `main` is supported.
+Only the latest commit on `main` is supported. Test against your own local deployment (see the [README](README.md#quick-start)), never against `vault.miszori.dev`.
 
 ## Scope
 
 In scope: the Go API, browser encryption and download code in `web/`, proxy configuration, and the WireGuard container.
 
-Out of scope: denial-of-service volume testing, attacks that require a compromised administrator device, and the limitations already documented under [Trust boundaries](README.md#trust-boundaries), such as a compromised server serving modified JavaScript.
-
-Please test against your own deployment, not `vault.miszori.dev`.
+Out of scope: denial-of-service volume testing, attacks that require a compromised administrator device, and the limitations already documented under [Trust boundaries](docs/security.md#trust-boundaries), such as a compromised server or Cloudflare serving modified JavaScript.
 
 ## Audit status
 

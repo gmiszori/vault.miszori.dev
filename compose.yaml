@@ -43,18 +43,20 @@ services:
       options: {max-size: "10m", max-file: "3"}
 
   caddy:
-    image: caddy:2.11-alpine@sha256:70b3180738b46cd88e49b300d790ae448a0aca3f58edef0f000bb57d619a9ab3
+    image: caddy:2.11-alpine@sha256:78bd35025c7ba85961dd149ae670315129954e77abe2383ac47c89106b35ade9
     user: "10002:10002"
     restart: unless-stopped
     environment:
       DOMAIN: ${DOMAIN:-vault.miszori.dev}
       PUBLIC_ORIGIN: https://${DOMAIN:-vault.miszori.dev}
       ACME_EMAIL: ${ACME_EMAIL:?Set ACME_EMAIL in .env}
+      ORIGIN_PULL: ${ORIGIN_PULL:-off} # see Caddyfile
     # No host ports: the webserver proxy (github.com/gmiszori/webserver-proxy) owns
     # 80/443 and passes this domain's TLS through to here.
     volumes:
       - ./Caddyfile:/etc/caddy/Caddyfile:ro
       - ./Caddyfile.common:/etc/caddy/common.caddy:ro
+      - ./origin-pull-ca.pem:/etc/caddy/origin-pull-ca.pem:ro
       - ./web:/srv:ro
       - caddy_data:/data
       - caddy_config:/config
@@ -114,7 +116,7 @@ services:
       options: {max-size: "10m", max-file: "3"}
 
   caddy-vpn:
-    image: caddy:2.11-alpine@sha256:70b3180738b46cd88e49b300d790ae448a0aca3f58edef0f000bb57d619a9ab3
+    image: caddy:2.11-alpine@sha256:78bd35025c7ba85961dd149ae670315129954e77abe2383ac47c89106b35ade9
     user: "10002:10002"
     restart: unless-stopped
     environment:
