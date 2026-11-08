@@ -768,8 +768,9 @@ test('entrypoints use the exact brand, system color scheme, and task-focused cop
     assert.doesNotMatch(html, /<header|class="brand"/);
     assert.doesNotMatch(html, /<a\b[^>]*\bhref="\/"/);
     assert.match(html, /<meta name="color-scheme" content="light dark">/);
-    // The only footer is the miszori.dev endorsement.
-    assert.deepEqual(html.match(/<footer[\s\S]*?<\/footer>/g), ['<footer class="project-footer"><span>vault</span><span class="endorse">by <a href="https://miszori.dev">miszori.dev</a><span class="gm-tile" aria-hidden="true">GM</span></span></footer>']);
+    // The only footer is the miszori.dev endorsement; recipients also get the privacy policy.
+    const label = name === 'index' ? 'vault · <a href="https://miszori.dev/privacy/">Privacy</a>' : 'vault';
+    assert.deepEqual(html.match(/<footer[\s\S]*?<\/footer>/g), [`<footer class="project-footer"><span>${label}</span><span class="endorse">by <a href="https://miszori.dev">miszori.dev</a><span class="gm-tile" aria-hidden="true">GM</span></span></footer>`]);
     assert.doesNotMatch(html, /A little less|Less exposure|Send it\.|Good things|Private by design|class="(?:hero|principles|privacy-panel|vault-art|workspace-badge)"/i);
     if (name === 'admin') assert.match(html, /Server logs include IP addresses/);
   }
@@ -914,7 +915,7 @@ test('homepage explains the encryption flow without scripts, inline styles, or a
   for (const step of ['Your data', 'Encrypt', 'Ciphertext', 'Decrypt', 'Delivered']) assert.match(html, new RegExp(`<h4>${step}</h4>`));
   assert.match(html, /#&lt;key&gt;/);
   const references = [...html.matchAll(/(?:src|href)="([^"]+)"/g)].map(match => match[1]);
-  assert.deepEqual(references, ['/favicon.svg', '/styles.css?v=1', '#main', 'https://github.com/gmiszori/vault.miszori.dev', 'https://miszori.dev']);
+  assert.deepEqual(references, ['/favicon.svg', '/styles.css?v=1', '#main', 'https://github.com/gmiszori/vault.miszori.dev', 'https://miszori.dev/privacy/', 'https://miszori.dev']);
 });
 
 test('VPN admin uses a local IP certificate and redirects to the IP without changing the public origin', async () => {
@@ -942,7 +943,7 @@ test('HTML entrypoints reference only the agreed self-hosted assets and contain 
     assert.match(html, /Content-Security-Policy/);
     const references = [...html.matchAll(/(?:src|href)="([^"]+)"/g)].map(match => match[1]);
     assert.match(html, /<link rel="icon" type="image\/svg\+xml" href="\/favicon.svg">/);
-    const allowed = new Set(['/styles.css?v=1', '/public.js', '/admin.js', '/favicon.svg', '/', '/admin/', '#main', 'https://miszori.dev']);
+    const allowed = new Set(['/styles.css?v=1', '/public.js', '/admin.js', '/favicon.svg', '/', '/admin/', '#main', 'https://miszori.dev', 'https://miszori.dev/privacy/']);
     for (const reference of references) assert.ok(allowed.has(reference), `Allowed asset or navigation: ${reference}`);
   }
 });
